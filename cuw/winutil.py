@@ -184,6 +184,52 @@ def windows_uses_light_theme():
 
 
 # --------------------------------------------------------------------------- glass backdrop
+gdi32 = ctypes.windll.gdi32
+gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateCompatibleBitmap.restype = wt.HBITMAP
+gdi32.SelectObject.restype = wt.HGDIOBJ
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+gdi32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+gdi32.BitBlt.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                         wt.HDC, ctypes.c_int, ctypes.c_int, wt.DWORD]
+gdi32.GetDIBits.argtypes = [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, ctypes.c_void_p,
+                            ctypes.c_void_p, wt.UINT]
+gdi32.DeleteObject.argtypes = [wt.HGDIOBJ]
+gdi32.DeleteDC.argtypes = [wt.HDC]
+user32.GetDC.restype = wt.HDC
+user32.GetDC.argtypes = [wt.HWND]
+user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG),
+                ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG),
+                ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+
+
+def grab_region(x, y, w, h):
+    """Copy just one screen rectangle (virtual-screen coords) via GDI BitBlt.
+    ~50x faster than ImageGrab, which copies the whole desktop and then crops."""
+    sdc = user32.GetDC(None)
+    mdc = gdi32.CreateCompatibleDC(sdc)
+    bmp = gdi32.CreateCompatibleBitmap(sdc, w, h)
+    old = gdi32.SelectObject(mdc, bmp)
+    try:
+        if not gdi32.BitBlt(mdc, 0, 0, w, h, sdc, x, y, 0x00CC0020 | 0x40000000):  # SRCCOPY|CAPTUREBLT
+            raise OSError("BitBlt failed")
+        bi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+        return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
+    finally:
+        gdi32.SelectObject(mdc, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mdc)
+        user32.ReleaseDC(None, sdc)
+
+
 def capture_backdrop(rect, light, exclude_hwnd=None):
     """Screenshot what's behind `rect`, frost it, return a JPEG data URL.
     exclude_hwnd is hidden from the capture for a moment so we don't blur ourselves."""
@@ -193,7 +239,7 @@ def capture_backdrop(rect, light, exclude_hwnd=None):
     try:
         if exclude_hwnd:
             user32.SetWindowDisplayAffinity(exclude_hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
-        img = ImageGrab.grab(bbox=(l, t, r, b), all_screens=True).convert("RGB")
+        img = grab_region(l, t, r - l, b - t)
     except Exception as e:
         log.warning("capture failed: %r", e)
         return None
@@ -202,9 +248,9 @@ def capture_backdrop(rect, light, exclude_hwnd=None):
             user32.SetWindowDisplayAffinity(exclude_hwnd, 0)
     w, h = img.size
     small = img.resize((max(8, w // 6), max(8, h // 6)), Image.BILINEAR)
-    small = small.filter(ImageFilter.GaussianBlur(5))
+    small = small.filter(ImageFilter.GaussianBlur(7))
     small = ImageEnhance.Color(small).enhance(1.5)
-    small = ImageEnhance.Brightness(small).enhance(1.05 if light else 0.9)
+    small = ImageEnhance.Brightness(small).enhance(1.3 if light else 0.9)
     buf = io.BytesIO()
     small.save(buf, "JPEG", quality=80)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()

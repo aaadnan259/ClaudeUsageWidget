@@ -15,6 +15,13 @@ from .tray import Tray
 PILL_TITLE, CARD_TITLE = "ClaudeUsagePill", "ClaudeUsageCard"
 PILL_SIZES = {"bars": (236, 52), "ring": (196, 52), "text": (214, 40)}
 CARD_W = 360
+WEBVIEW2_FLAGS = " ".join([
+    "--allow-file-access-from-files",
+    "--disable-features=ElasticOverscroll,BackForwardCache,Translate,msSmartScreenProtection",
+    "--disable-gpu", "--disable-gpu-compositing",
+    "--renderer-process-limit=1",
+    "--disable-extensions", "--disable-background-networking",
+])
 
 COLORS = {  # used for tray / taskbar icons
     "ok": "#3DDC97", "warn": "#F5A524", "crit": "#F43F5E", "none": "#808080",
@@ -126,7 +133,7 @@ class App:
         self.history = History(demo)
         self.limits = LimitsFetcher(self.store, self.history, demo)
         self.logs = LogScanner(self.store)
-        self.light = W.windows_uses_light_theme()
+        self.light = self.want_light()
         self.api = Api(self)
         self.pill_hwnd = self.card_hwnd = None
         self.card_open = False
@@ -135,11 +142,15 @@ class App:
         self.hidden_fs = False
         self.forecast_alerted = None
         self.last_pill_bd = 0
+        self.last_pill_url = None
         self.last_payload = {}
         self.ready = threading.Event()
 
     # ------------------------------------------------------------ startup
     def run(self):
+        # Two tiny pages don't need GPU acceleration; software rendering plus a single
+        # shared renderer cuts the WebView2 footprint by ~40% (285 -> ~175 MB private).
+        os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", WEBVIEW2_FLAGS)
         self.limits.start()
         self.logs.start()
         style = self.store.cfg["pill_style"]
@@ -153,7 +164,7 @@ class App:
             CARD_TITLE, url=os.path.join(WEB_DIR, "card.html"), js_api=self.api,
             width=CARD_W, height=600, min_size=(200, 150), frameless=True, on_top=True, resizable=False,
             background_color=bg, hidden=True)
-        webview.start(self._after_start, gui="edgechromium", private_mode=False,
+        webview.start(self._after_start, gui="edgechromium", private_mode=True,
                       storage_path=os.path.join(DATA_DIR, "webview"))
 
     def _after_start(self):
@@ -183,6 +194,10 @@ class App:
         self.refresh_pill_backdrop(force=True)
         self.ready.set()
         threading.Thread(target=self.loop, daemon=True).start()
+
+    def want_light(self):
+        t = self.store.cfg.get("theme", "auto")
+        return W.windows_uses_light_theme() if t == "auto" else t == "light"
 
     def px(self, v):
         return int(round(v * self.scale))
@@ -247,13 +262,14 @@ class App:
 
     # ------------------------------------------------------------ glass backdrops
     def refresh_pill_backdrop(self, force=False):
-        if not force and time.time() - self.last_pill_bd < 4:
+        if not force and time.time() - self.last_pill_bd < 6:
             return
         self.last_pill_bd = time.time()
         w, h = self.pill_size()
         x, y = self.pill_pos
         url = W.capture_backdrop((x, y, x + w, y + h), self.light, exclude_hwnd=self.pill_hwnd)
-        if url:
+        if url and (force or url != self.last_pill_url):  # skip repaint if nothing changed behind
+            self.last_pill_url = url
             self.js(self.pill, f"setBackdrop({json.dumps(url)})")
 
     def card_rect(self):
@@ -386,10 +402,16 @@ class App:
         except Exception:
             log.exception("model")
             return
+        # The pill only needs a few fields; sending it the whole card model would
+        # repaint it every second or two (the timeline's "now" keeps moving).
+        pill_model = {k: model[k] for k in ("theme", "status", "error", "rows", "settings")}
+        if not model["rows"] and model["stats"]:
+            pill_model["stats"] = {"today": model["stats"]["today"]}
+        pill_payload = json.dumps(pill_model)
+        if force or self.last_payload.get("pill") != pill_payload:
+            self.last_payload["pill"] = pill_payload
+            self.js(self.pill, f"update({pill_payload})")
         payload = json.dumps(model)
-        if force or self.last_payload.get("pill") != payload:
-            self.last_payload["pill"] = payload
-            self.js(self.pill, f"update({payload})")
         if self.card_open and (force or self.last_payload.get("card") != payload):
             self.last_payload["card"] = payload
             self.js(self.card, f"update({payload})")
@@ -429,7 +451,7 @@ class App:
                     self.last_pill_bd = 0
                 last = now
                 self.watchdog()
-                light = W.windows_uses_light_theme()
+                light = self.want_light()
                 if light != self.light:
                     self.light = light
                     W.style_popup(self.pill_hwnd, not light)

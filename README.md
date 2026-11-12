@@ -26,6 +26,7 @@ Try it with fake numbers: `pythonw claude_usage_widget.pyw --demo`
 
 ## Settings (⚙ in the card)
 - Pill style: bars, ring or text
+- Theme: Auto (follows Windows), Dark or Light
 - Start with Windows
 - Alerts at 75% and 90%, on reset, and when you're on pace to hit the limit
 - Fade the pill when idle
@@ -46,6 +47,25 @@ Everything is stored in `%APPDATA%\ClaudeUsageWidget\`:
 | Activity and heatmap | Read-only parsing of Claude Code logs in `~/.claude/projects`. claude.ai chats aren't in these logs, but they *are* counted in the plan %. |
 | Glass look | WebView2 can't be truly see-through. Instead, the widget captures what's behind it, blurs and tints it, and uses that as its background. It refreshes every few seconds and hides itself from the capture so it never blurs its own pixels. |
 
+## Footprint
+About 175 MB of private memory and around 2% of one CPU core when idle.
+To keep it there:
+- WebView2 runs without GPU acceleration, with a single shared renderer and in private mode (no disk cache).
+- The glass backdrop copies only the pill's rectangle of the screen via GDI and is pre-blurred in Python.
+- The pill is only repainted when something it shows changes.
+
+## Tests
+```
+python -m unittest discover -s tests -v
+```
+They cover:
+- parsing Anthropic's response
+- reset-time jitter
+- the pace forecast
+- the timeline projection
+- number formatting
+- log scanning, including duplicates and half-written lines
+
 ## Project layout
 ```
 claude_usage_widget.pyw   entry point
@@ -54,5 +74,6 @@ cuw/data.py               Anthropic limits, history + forecast, log scanner
 cuw/winutil.py            Win32: placement, glass capture, autostart, taskbar button/menu
 cuw/tray.py               tray icon + notifications
 cuw/web/                  pill.html, card.html, glass.css
+tests/                    unit tests (stdlib unittest)
 legacy/                   previous tkinter version
 ```

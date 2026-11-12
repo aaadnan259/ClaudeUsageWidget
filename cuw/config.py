@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     "taskbar_button": True,
     "show_model_limits": False,
     "pill_style": "bars",        # bars | ring | text
+    "theme": "auto",             # auto (follow Windows) | dark | light
     "margin_px": 8,
 }
 

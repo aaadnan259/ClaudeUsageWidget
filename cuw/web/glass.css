@@ -9,8 +9,8 @@
 }
 body.light {
   --fg: #16171c; --sub: rgba(22,23,28,.62); --faint: rgba(22,23,28,.40);
-  --track: rgba(10,20,40,.10); --line: rgba(10,20,40,.08); --chip: rgba(10,20,40,.06);
-  --tint-a: rgba(255,255,255,.62); --tint-b: rgba(236,239,246,.74); --sheen: rgba(255,255,255,.5);
+  --track: rgba(10,20,40,.09); --line: rgba(10,20,40,.08); --chip: rgba(10,20,40,.05);
+  --tint-a: rgba(255,255,255,.80); --tint-b: rgba(240,242,248,.88); --sheen: rgba(255,255,255,.6);
   --ok1: #0d9488; --ok2: #16a34a; --okg: rgba(13,148,136,.35);
   --warn1: #d97706; --warn2: #b45309; --warng: rgba(217,119,6,.35);
   --crit1: #e11d48; --crit2: #b91c1c; --critg: rgba(225,29,72,.35);
@@ -24,7 +24,7 @@ body {
   -webkit-font-smoothing: antialiased; transition: background .3s;
 }
 #bd { position: fixed; inset: 0; background-size: 100% 100%; background-position: center;
-      filter: blur(8px); transform: scale(1.12); transition: opacity .35s; opacity: 0; }
+      transition: opacity .35s; opacity: 0; }  /* pre-blurred in Python: no CSS filter cost */
 #bd.on { opacity: 1; }
 #tint { position: fixed; inset: 0; background: linear-gradient(155deg, var(--tint-a), var(--tint-b)); }
 #tint::after { content: ""; position: absolute; inset: 0;

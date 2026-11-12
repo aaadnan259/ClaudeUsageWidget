@@ -35,7 +35,8 @@ class Tray:
         if key != self.last_key:
             self.icon.icon = ring_icon_image(pct, color)
             self.last_key = key
-        self.icon.title = tip[:127]
+        if self.icon.title != tip[:127]:  # each change is a shell call; skip no-ops
+            self.icon.title = tip[:127]
 
     def notify(self, title, msg):
         if self.icon:
