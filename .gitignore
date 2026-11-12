@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+build/
+dist/
+*.spec
+.vscode/
+.idea/
+Thumbs.db

@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>pill</title>
+<link rel="stylesheet" href="glass.css">
+<style>
+  #c { position: relative; height: 100%; display: flex; align-items: center; padding: 0 12px;
+       transition: opacity .25s; font-size: 12.5px; }
+  body.dim:not(:hover) #c { opacity: .62; }
+  .rows { width: 100%; display: grid; gap: 7px; }
+  .row { display: grid; grid-template-columns: 22px 1fr 40px auto; align-items: center; gap: 8px; }
+  .row b { font-weight: 600; }
+  .row .bar { height: 6px; }
+  .row .p { text-align: right; font-weight: 700; }
+  .row .r { color: var(--sub); font-size: 11.5px; min-width: 52px; text-align: right; }
+  .ring { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .ring svg { flex: none; filter: drop-shadow(0 0 4px var(--cg)); }
+  .ring circle { transition: stroke-dashoffset 1s cubic-bezier(.2,.8,.2,1); }
+  .ring .big { font-size: 19px; font-weight: 700; }
+  .ring .meta { display: flex; flex-direction: column; line-height: 1.25; font-size: 11.5px; color: var(--sub); }
+  .ring .meta b { color: var(--fg); font-weight: 600; }
+  .text { display: flex; align-items: center; gap: 8px; width: 100%; white-space: nowrap; }
+  .text .big { font-weight: 700; font-size: 14px; }
+  .text .s { color: var(--sub); }
+  .msg { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; }
+  .msg > div { min-width: 0; }
+  .msg .t, .msg .s { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg .t { font-weight: 600; }
+  .msg .s { color: var(--sub); font-size: 11.5px; }
+  .err { position: absolute; top: 5px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn2); }
+</style></head>
+<body>
+<div id="bd"></div><div id="tint"></div>
+<div id="c"></div>
+<script>
+const $c = document.getElementById('c');
+let last = null;
+const spark = `<svg width="16" height="16" viewBox="0 0 24 24"><g stroke="var(--brand)" stroke-width="2.6" stroke-linecap="round">${
+  [0,45,90,135].map(a=>`<line x1="12" y1="3" x2="12" y2="21" transform="rotate(${a} 12 12)"/>`).join('')}</g></svg>`;
+
+function setBackdrop(url){ const b=document.getElementById('bd'); b.style.backgroundImage=`url(${url})`; b.classList.add('on'); }
+function grad(id){ return `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--c1)"/><stop offset="1" stop-color="var(--c2)"/></linearGradient></defs>`; }
+
+function update(m){
+  document.body.classList.toggle('light', m.theme === 'light');
+  document.body.classList.toggle('dim', !!m.settings.dim_when_idle);
+  const style = m.settings.pill_style || 'bars';
+  const rows = m.rows || [];
+  const key = style + '|' + rows.map(r=>r.key).join(',') + '|' + (rows.length ? 'ok' : m.status);
+  if (!rows.length) {
+    const msg = {loading:['Claude usage','Loading…'], signin:['Sign in to see limits','Run claude → /login'],
+                 expired:['Sign-in expired','Run claude → /login'], error:['Claude usage', m.error || "Can't reach Anthropic"]}[m.status] || ['Claude usage',''];
+    $c.innerHTML = `<div class="msg">${spark}<div><div class="t">${msg[0]}</div><div class="s">${msg[1]}${m.stats && m.status!=='loading' ? ' · ' + m.stats.today + ' today' : ''}</div></div></div>`;
+    last = key; return;
+  }
+  if (key !== last) { build(style, rows); last = key; }
+  fill(style, rows, m);
+}
+
+function build(style, rows){
+  if (style === 'ring') {
+    $c.innerHTML = `<div class="ring"><svg width="34" height="34" viewBox="0 0 34 34" id="rg">${grad('g0')}
+      <circle cx="17" cy="17" r="13.5" fill="none" stroke="var(--track)" stroke-width="4.5"/>
+      <circle id="arc" cx="17" cy="17" r="13.5" fill="none" stroke="url(#g0)" stroke-width="4.5" stroke-linecap="round"
+        stroke-dasharray="84.82" stroke-dashoffset="84.82" transform="rotate(-90 17 17)"/></svg>
+      <span class="big num" id="p0"></span><div class="meta"><span id="r0"></span><span id="w"></span></div></div>`;
+  } else if (style === 'text') {
+    $c.innerHTML = `<div class="text">${spark}<span class="big num" id="p0"></span><span class="s" id="r0"></span><span class="s">·</span><span id="w"></span></div>`;
+  } else {
+    $c.innerHTML = `<div class="rows">${rows.slice(0,2).map((r,i)=>`<div class="row" id="row${i}"><b>${r.short}</b>
+      <div class="bar"><i id="b${i}"></i></div><span class="p num" id="p${i}"></span><span class="r" id="r${i}"></span></div>`).join('')}</div>`;
+  }
+}
+
+function fill(style, rows, m){
+  const five = rows[0], wk = rows[1];
+  const lv = r => 'l-' + r.level;
+  if (style === 'ring') {
+    document.getElementById('rg').setAttribute('class', lv(five) + (five.pct >= 90 ? ' pulse' : ''));
+    document.getElementById('arc').style.strokeDashoffset = 84.82 * (1 - Math.min(five.pct,100)/100);
+    const p = document.getElementById('p0'); p.textContent = five.pct_i + '%'; p.className = 'big num grad-text ' + lv(five);
+    document.getElementById('r0').innerHTML = `<b>${five.title}</b> · ${five.reset_short}`;
+    document.getElementById('w').textContent = wk ? `${wk.title} ${wk.pct_i}%` : '';
+  } else if (style === 'text') {
+    const p = document.getElementById('p0'); p.textContent = five.pct_i + '%'; p.className = 'big num grad-text ' + lv(five);
+    document.getElementById('r0').textContent = five.reset_short;
+    document.getElementById('w').innerHTML = wk ? `${wk.short} <b class="num">${wk.pct_i}%</b>` : '';
+  } else {
+    rows.slice(0,2).forEach((r,i)=>{
+      document.getElementById('row'+i).className = 'row ' + lv(r);
+      document.getElementById('b'+i).style.width = Math.max(3, Math.min(r.pct,100)) + '%';
+      const p = document.getElementById('p'+i); p.textContent = r.pct_i + '%';
+      p.className = 'p num' + (r.level !== 'ok' ? ' grad-text' : '');
+      document.getElementById('r'+i).textContent = r.reset_short;
+    });
+  }
+  let e = document.querySelector('.err');
+  if (m.status === 'error' && !e) { e = document.createElement('div'); e.className = 'err'; e.title = m.error; document.body.appendChild(e); }
+  if (m.status !== 'error' && e) e.remove();
+}
+
+document.addEventListener('mousedown', e => { if (e.button === 0 && window.pywebview) pywebview.api.pill_down(); });
+document.addEventListener('contextmenu', e => { e.preventDefault(); if (window.pywebview) pywebview.api.pill_menu(); });
+</script>
+</body></html>

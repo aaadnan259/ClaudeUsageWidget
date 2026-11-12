@@ -1,0 +1,43 @@
+:root {
+  --fg: #f4f5f8; --sub: rgba(235,238,245,.62); --faint: rgba(235,238,245,.38);
+  --track: rgba(255,255,255,.10); --line: rgba(255,255,255,.09); --chip: rgba(255,255,255,.08);
+  --tint-a: rgba(32,34,50,.64); --tint-b: rgba(14,15,22,.76); --sheen: rgba(255,255,255,.07);
+  --ok1: #5eead4; --ok2: #4ade80; --okg: rgba(94,234,212,.55);
+  --warn1: #fde047; --warn2: #f59e0b; --warng: rgba(245,158,11,.55);
+  --crit1: #fb7185; --crit2: #ef4444; --critg: rgba(244,63,94,.6);
+  --brand: #e8743b; --body: #1b1c22;
+}
+body.light {
+  --fg: #16171c; --sub: rgba(22,23,28,.62); --faint: rgba(22,23,28,.40);
+  --track: rgba(10,20,40,.10); --line: rgba(10,20,40,.08); --chip: rgba(10,20,40,.06);
+  --tint-a: rgba(255,255,255,.62); --tint-b: rgba(236,239,246,.74); --sheen: rgba(255,255,255,.5);
+  --ok1: #0d9488; --ok2: #16a34a; --okg: rgba(13,148,136,.35);
+  --warn1: #d97706; --warn2: #b45309; --warng: rgba(217,119,6,.35);
+  --crit1: #e11d48; --crit2: #b91c1c; --critg: rgba(225,29,72,.35);
+  --body: #eef0f5;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--body); color: var(--fg); user-select: none; cursor: default;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; transition: background .3s;
+}
+#bd { position: fixed; inset: 0; background-size: 100% 100%; background-position: center;
+      filter: blur(8px); transform: scale(1.12); transition: opacity .35s; opacity: 0; }
+#bd.on { opacity: 1; }
+#tint { position: fixed; inset: 0; background: linear-gradient(155deg, var(--tint-a), var(--tint-b)); }
+#tint::after { content: ""; position: absolute; inset: 0;
+  background: radial-gradient(120% 60% at 15% -10%, var(--sheen), transparent 60%); }
+.num { font-variant-numeric: tabular-nums; }
+.l-ok { --c1: var(--ok1); --c2: var(--ok2); --cg: var(--okg); }
+.l-warn { --c1: var(--warn1); --c2: var(--warn2); --cg: var(--warng); }
+.l-crit { --c1: var(--crit1); --c2: var(--crit2); --cg: var(--critg); }
+.grad-text { background: linear-gradient(120deg, var(--c1), var(--c2)); -webkit-background-clip: text;
+             background-clip: text; color: transparent; }
+.bar { position: relative; height: 8px; border-radius: 8px; background: var(--track); overflow: hidden; }
+.bar > i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 8px;
+           background: linear-gradient(90deg, var(--c1), var(--c2)); box-shadow: 0 0 10px var(--cg);
+           transition: width 1s cubic-bezier(.2,.8,.2,1); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
