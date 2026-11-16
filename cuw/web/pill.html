@@ -15,7 +15,7 @@
   .ring svg { flex: none; filter: drop-shadow(0 0 4px var(--cg)); }
   .ring circle { transition: stroke-dashoffset 1s cubic-bezier(.2,.8,.2,1); }
   .ring .big { font-size: 19px; font-weight: 700; }
-  .ring .meta { display: flex; flex-direction: column; line-height: 1.25; font-size: 11.5px; color: var(--sub); }
+  .ring .meta { display: flex; flex-direction: column; line-height: 1.25; font-size: 11.5px; color: var(--sub); white-space: nowrap; }
   .ring .meta b { color: var(--fg); font-weight: 600; }
   .text { display: flex; align-items: center; gap: 8px; width: 100%; white-space: nowrap; }
   .text .big { font-weight: 700; font-size: 14px; }
@@ -26,6 +26,10 @@
   .msg .t { font-weight: 600; }
   .msg .s { color: var(--sub); font-size: 11.5px; }
   .err { position: absolute; top: 5px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn2); }
+  /* Stale = last-known values: muted numbers and fills, so they never look freshly fetched */
+  body.stale .p, body.stale .big { color: var(--sub) !important; background: none !important; -webkit-text-fill-color: currentColor; }
+  body.stale .bar > i { background: var(--faint); box-shadow: none; }
+  body.stale #rg { --c1: var(--faint); --c2: var(--faint); filter: none; }
 </style></head>
 <body>
 <div id="bd"></div><div id="tint"></div>
@@ -42,6 +46,10 @@ function grad(id){ return `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1"
 function update(m){
   document.body.classList.toggle('light', m.theme === 'light');
   document.body.classList.toggle('dim', !!m.settings.dim_when_idle);
+  const stale = !!(m.fresh && m.fresh.state === 'stale');
+  document.body.classList.toggle('stale', stale);
+  document.title = '';
+  document.body.title = m.fresh && m.fresh.label ? (stale ? `${m.fresh.reason} · ${m.fresh.label}` : m.fresh.label) : '';
   const style = m.settings.pill_style || 'bars';
   const rows = m.rows || [];
   const key = style + '|' + rows.map(r=>r.key).join(',') + '|' + (rows.length ? 'ok' : m.status);
@@ -52,7 +60,7 @@ function update(m){
     last = key; return;
   }
   if (key !== last) { build(style, rows); last = key; }
-  fill(style, rows, m);
+  fill(style, rows, m, stale);
 }
 
 function build(style, rows){
@@ -70,31 +78,32 @@ function build(style, rows){
   }
 }
 
-function fill(style, rows, m){
+function fill(style, rows, m, stale){
   const five = rows[0], wk = rows[1];
   const lv = r => 'l-' + r.level;
+  const pc = r => r.pct_i === null ? '—' : r.pct_i + '%';
   if (style === 'ring') {
     document.getElementById('rg').setAttribute('class', lv(five) + (five.pct >= 90 ? ' pulse' : ''));
     document.getElementById('arc').style.strokeDashoffset = 84.82 * (1 - Math.min(five.pct,100)/100);
-    const p = document.getElementById('p0'); p.textContent = five.pct_i + '%'; p.className = 'big num grad-text ' + lv(five);
-    document.getElementById('r0').innerHTML = `<b>${five.title}</b> · ${five.reset_short}`;
-    document.getElementById('w').textContent = wk ? `${wk.title} ${wk.pct_i}%` : '';
+    const p = document.getElementById('p0'); p.textContent = pc(five); p.className = 'big num grad-text ' + lv(five);
+    document.getElementById('r0').innerHTML = `<b>${five.short}</b> · ${five.reset_short}`;
+    document.getElementById('w').textContent = wk ? `${wk.short} ${pc(wk)}` : '';
   } else if (style === 'text') {
-    const p = document.getElementById('p0'); p.textContent = five.pct_i + '%'; p.className = 'big num grad-text ' + lv(five);
+    const p = document.getElementById('p0'); p.textContent = pc(five); p.className = 'big num grad-text ' + lv(five);
     document.getElementById('r0').textContent = five.reset_short;
-    document.getElementById('w').innerHTML = wk ? `${wk.short} <b class="num">${wk.pct_i}%</b>` : '';
+    document.getElementById('w').innerHTML = wk ? `${wk.short} <b class="num">${pc(wk)}</b>` : '';
   } else {
     rows.slice(0,2).forEach((r,i)=>{
       document.getElementById('row'+i).className = 'row ' + lv(r);
       document.getElementById('b'+i).style.width = Math.max(3, Math.min(r.pct,100)) + '%';
-      const p = document.getElementById('p'+i); p.textContent = r.pct_i + '%';
+      const p = document.getElementById('p'+i); p.textContent = pc(r);
       p.className = 'p num' + (r.level !== 'ok' ? ' grad-text' : '');
       document.getElementById('r'+i).textContent = r.reset_short;
     });
   }
   let e = document.querySelector('.err');
-  if (m.status === 'error' && !e) { e = document.createElement('div'); e.className = 'err'; e.title = m.error; document.body.appendChild(e); }
-  if (m.status !== 'error' && e) e.remove();
+  if (stale && !e) { e = document.createElement('div'); e.className = 'err'; document.body.appendChild(e); }
+  if (!stale && e) e.remove();
 }
 
 document.addEventListener('mousedown', e => { if (e.button === 0 && window.pywebview) pywebview.api.pill_down(); });

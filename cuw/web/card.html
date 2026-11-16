@@ -44,6 +44,12 @@
   /* timeline */
   .tlh { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
   .tlh span:last-child { font-size: 11px; color: var(--sub); }
+  .lg { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 11px; color: var(--sub); }
+  .lg i { display: inline-block; width: 14px; height: 0; border-top: 2.5px solid var(--ok2); }
+  .lg i.d { border-top: 1.5px dashed var(--sub); }
+  #limits.stale { opacity: .5; }
+  #limits.stale .grad-text { background: none; -webkit-text-fill-color: var(--sub); color: var(--sub); }
+  #upd.stale { color: var(--warn2); }
   #tl { display: block; overflow: visible; }
   #tl text { font-size: 10px; fill: var(--faint); font-family: inherit; }
   @keyframes halo { 0% { r: 4; opacity: .7 } 100% { r: 12; opacity: 0 } }
@@ -54,6 +60,7 @@
   .stat { background: var(--chip); border-radius: 12px; padding: 9px 11px; }
   .stat .v { font-size: 17px; font-weight: 700; }
   .stat .k { font-size: 11px; color: var(--sub); margin-top: 1px; white-space: nowrap; }
+  .stat .k2 { font-size: 11px; color: var(--faint); white-space: nowrap; min-height: 14px; }
   .hm { display: grid; grid-template-columns: 26px repeat(24, 1fr); gap: 2px; margin-top: 10px; align-items: center; }
   .hm .d { font-size: 10px; color: var(--faint); }
   .hm .c { aspect-ratio: 1; border-radius: 3px; background: var(--track); transition: transform .12s; }
@@ -170,7 +177,7 @@ function animateIn(){
     a.style.strokeDashoffset = a.dataset.c; a.getBoundingClientRect(); a.style.transition=''; a.style.strokeDashoffset = off; });
   document.querySelectorAll('.bar > i').forEach(b => { const w = b.dataset.w; b.style.transition='none'; b.style.width='0';
     b.getBoundingClientRect(); b.style.transition=''; b.style.width = w; });
-  document.querySelectorAll('[data-count]').forEach(e => countTo(e, +e.dataset.count));
+  document.querySelectorAll('[data-count]').forEach(e => { if (e.dataset.count !== '') countTo(e, +e.dataset.count); });
   const p = $('tl').querySelector('.line'); if (p) { const L = p.getTotalLength(); p.style.transition='none';
     p.style.strokeDasharray = L; p.style.strokeDashoffset = L; p.getBoundingClientRect();
     p.style.transition='stroke-dashoffset 1.2s cubic-bezier(.2,.8,.2,1)'; p.style.strokeDashoffset = 0; }
@@ -182,9 +189,13 @@ function update(m){
   $('plan').hidden = !m.plan; $('plan').textContent = m.plan || '';
   $('viewBtn').innerHTML = m.view === 'bars' ? ICONS.rings : ICONS.bars;
   renderLimits(m); renderForecast(m); renderTimeline(m); renderStats(m); renderSettings(m.settings);
-  $('upd').textContent = m.status === 'error' && m.rows.length ? `${m.updated} · ${m.error}, last values` : m.updated;
+  const stale = m.fresh && m.fresh.state === 'stale';
+  $('limits').classList.toggle('stale', !!stale);
+  $('upd').textContent = stale ? `${m.fresh.label} · ${m.fresh.reason}` : m.updated;
+  $('upd').className = stale ? 'stale' : '';
+  $('upd').title = stale ? 'Showing the last known values until the next successful update' : '';
   $('ivl').textContent = 'every ' + m.interval;
-  $('live').className = 'live' + (m.status === 'ok' ? '' : ' bad');
+  $('live').className = 'live' + (m.fresh && m.fresh.state === 'fresh' ? '' : ' bad');
   reportHeight();
 }
 
@@ -217,14 +228,22 @@ function renderLimits(m){
   }
   rows.forEach((r,i)=>{
     const el = $('lr'+i); el.className = (m.view === 'bars' ? 'brow ' : 'rw ') + 'l-' + r.level;
-    const cnt = el.querySelector('[data-count]'); cnt.dataset.count = r.pct_i;
-    if (cnt.textContent !== '0' || !isOpen) cnt.textContent = r.pct_i;
+    const cnt = el.querySelector('[data-count]');
+    const pctSign = el.querySelector('small') || cnt.nextSibling;
+    if (r.pct_i === null) {  // window reset since the last fetch: no current value yet
+      cnt.dataset.count = ''; cnt.textContent = '—';
+      if (pctSign) pctSign.textContent = '';
+    } else {
+      cnt.dataset.count = r.pct_i;
+      if (cnt.textContent !== '0' || !isOpen) cnt.textContent = r.pct_i;
+      if (pctSign) pctSign.textContent = '%';
+    }
     if (m.view === 'bars') {
       el.querySelector('.ic').innerHTML = (ICONS[r.key] || ICONS.other).replace('>', '>' + igrad('ig'+i)).replace(/url\(#ig\)/g, `url(#ig${i})`);
-      el.querySelector('.r').textContent = r.reset_card ? 'Reset ' + r.reset_card : '';
+      el.querySelector('.r').textContent = r.reset_card;
       const b = el.querySelector('.bar > i'); b.dataset.w = Math.max(2, Math.min(r.pct,100)) + '%'; b.style.width = b.dataset.w;
     } else {
-      el.querySelector('.rs').textContent = r.reset_card ? (r.key === 'five_hour' ? 'resets ' : '') + r.reset_card : '';
+      el.querySelector('.rs').textContent = r.reset_card;
       const a = el.querySelector('.arc'); a.dataset.off = 320.44 * (1 - Math.min(r.pct,100)/100); a.style.strokeDashoffset = a.dataset.off;
       el.querySelector('.rbox').classList.toggle('pulse', r.pct >= 90);
     }
@@ -243,15 +262,17 @@ function renderTimeline(m){
   const t = m.timeline, sec = $('tlSec');
   if (!t) { sec.style.display = 'none'; return; }
   sec.style.display = '';
-  $('tlr').textContent = `${t.start_label} → ${t.end_label}`;
+  $('tlr').innerHTML = `<span class="lg"><i></i>Actual</span>` + (t.proj ? `<span class="lg"><i class="d"></i>Projected</span>` : '');
   const W = 320, top = 8, bot = 74, X = x => x * W, Y = p => bot - (bot - top) * Math.min(p, 100) / 100;
   const pts = t.points.map(([x,p]) => [X(x), Y(p)]);
   const line = pts.map((q,i)=>(i?'L':'M') + q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ');
   const area = line + ` L${pts[pts.length-1][0].toFixed(1)},${bot} L0,${bot} Z`;
-  const nx = X(t.now_x), ny = Y(t.now_pct);
-  let proj = '';
-  if (t.proj) proj = `<line x1="${nx}" y1="${ny}" x2="${X(t.proj[0])}" y2="${Y(t.proj[1])}" stroke="url(#tg)" stroke-width="2" stroke-dasharray="4 5" opacity=".8"/>` +
-    (t.hit ? `<circle cx="${X(t.proj[0])}" cy="${Y(100)}" r="3.5" fill="none" stroke="var(--c2)" stroke-width="1.6"/>` : '');
+  const lx = X(t.last_x), ly = Y(t.now_pct), nx = X(t.now_x);
+  const fresh = m.fresh && m.fresh.state === 'fresh';
+  let proj = '';  // estimate: thin, dashed, muted (never styled like measured data)
+  if (t.proj) proj = `<line x1="${lx}" y1="${ly}" x2="${X(t.proj[0])}" y2="${Y(t.proj[1])}" stroke="var(--sub)" stroke-width="1.6" stroke-dasharray="3 4"/>` +
+    (t.hit ? `<circle cx="${X(t.proj[0])}" cy="${Y(100)}" r="3.5" fill="none" stroke="var(--sub)" stroke-width="1.4"/>` : '');
+  const nowTick = nx - lx > 3 ? `<line x1="${nx}" y1="${top}" x2="${nx}" y2="${bot}" stroke="var(--faint)" stroke-dasharray="1 3"/>` : '';
   const ticks = [0.2,0.4,0.6,0.8].map(x=>`<line x1="${X(x)}" y1="${top}" x2="${X(x)}" y2="${bot}" stroke="var(--line)"/>`).join('');
   const svg = $('tl'); svg.setAttribute('class', 'l-' + t.level);
   const lineChanged = svg.dataset.line !== line; svg.dataset.line = line;
@@ -261,8 +282,8 @@ function renderTimeline(m){
     <text x="${W}" y="${top - 2}" text-anchor="end">100%</text>
     <path d="${area}" fill="url(#ta)"/>
     <path class="line" d="${line}" fill="none" stroke="url(#tg)" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" style="filter:drop-shadow(0 0 5px var(--cg))"/>
-    ${proj}
-    <circle class="halo" cx="${nx}" cy="${ny}" r="4" fill="var(--c2)"/><circle cx="${nx}" cy="${ny}" r="4" fill="var(--c2)" stroke="var(--body)" stroke-width="1.5"/>
+    ${proj}${nowTick}
+    ${fresh ? `<circle class="halo" cx="${lx}" cy="${ly}" r="4" fill="var(--c2)"/>` : ''}<circle cx="${lx}" cy="${ly}" r="4" fill="${fresh ? 'var(--c2)' : 'var(--sub)'}" stroke="var(--body)" stroke-width="1.5"/>
     ${nx > 70 ? `<text x="0" y="${bot + 16}">${t.start_label}</text>` : ''}
     <text x="${Math.min(Math.max(nx, 14), W - 14)}" y="${bot + 16}" text-anchor="middle" style="fill:var(--sub)">now</text>
     ${nx < W - 70 ? `<text x="${W}" y="${bot + 16}" text-anchor="end">${t.end_label}</text>` : ''}`;
@@ -272,9 +293,13 @@ function fmtTok(n){ return n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e4 ? Math.r
 function renderStats(m){
   const s = m.stats;
   if (!s) { $('stats').innerHTML = '<div class="stat"><div class="k">Reading logs…</div></div>'; return; }
-  $('stats').innerHTML = [[s.today, `Today · ${s.msgs} replies`], [s.week, 'Last 7 days'],
-    [s.burn + '/m', s.active ? `${s.active} active now` : 'Idle now']]
-    .map(([v,k])=>`<div class="stat"><div class="v num">${v}</div><div class="k">${k}</div></div>`).join('');
+  const sess = s.active ? `${s.active} active session${s.active > 1 ? 's' : ''}` : 'idle';
+  $('stats').innerHTML = [[s.today, 'tokens today', `${s.msgs} responses`], [s.week, 'tokens, 7 days', ''],
+    [s.burn, 'tokens/min', sess]]
+    .map(([v,k,k2])=>`<div class="stat"><div class="v num">${v}</div><div class="k">${k}</div><div class="k2">${k2}</div></div>`).join('');
+  $('stats').title = 'Claude Code only, from local logs: input + output + cache-write tokens (cache reads excluded). '
+    + 'Responses = model responses, including tool steps. Tokens/min = average over the last 10 minutes. '
+    + 'claude.ai chats are not included here, but do count toward your plan limits above.';
   const max = Math.max(1, ...s.heat.flat());
   const hm = $('hm');
   if (!hm.children.length) {

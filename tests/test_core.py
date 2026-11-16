@@ -15,7 +15,8 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cuw import data  # noqa: E402
-from cuw.app import App, fmt_dur, fmt_tokens, level  # noqa: E402
+from cuw.app import (App, display_pct, fmt_dur, fmt_eta, fmt_tokens, forecast_verdict,  # noqa: E402
+                     freshness, level)
 from cuw.data import FIVE_HOURS, History, LimitsFetcher, LogScanner, parse_iso, reset_key  # noqa: E402
 
 UTC = dt.timezone.utc
@@ -105,34 +106,54 @@ class ForecastTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
-    def test_projection_hits_limit_inside_window(self):
+    def test_projection_hits_limit_where_the_forecast_says(self):
         now = time.time()
         resets = dt.datetime.fromtimestamp(now + 2.5 * 3600, UTC)  # halfway through the 5h window
         app = SimpleNamespace(history=make_history([sample(now - 600, 40, resets)]))
         five = {"pct": 50.0, "resets": resets}
-        tl = App.build_timeline(app, five, eta=3600)  # 1h to 100% < 2.5h left
+        tl = App.build_timeline(app, five, eta=3600, updated=now)  # 1h to 100% < 2.5h left
         self.assertAlmostEqual(tl["now_x"], 0.5, places=2)
         self.assertTrue(tl["hit"])
-        self.assertAlmostEqual(tl["proj"][0], 0.5 + 3600 / FIVE_HOURS, places=2)
+        start = resets.timestamp() - FIVE_HOURS
+        # where the projection meets 100% == last sample time + eta (same estimate as the text)
+        self.assertAlmostEqual(start + tl["proj"][0] * FIVE_HOURS, now + 3600, delta=2)
         self.assertEqual(tl["proj"][1], 100.0)
         self.assertEqual(tl["points"][0], (0.0, 0.0))
         xs = [p[0] for p in tl["points"]]
         self.assertEqual(xs, sorted(xs))
 
-    def test_projection_stays_under(self):
+    def test_projection_stays_under_and_stops_at_reset(self):
         now = time.time()
         resets = dt.datetime.fromtimestamp(now + 2.5 * 3600, UTC)
         app = SimpleNamespace(history=make_history())
-        tl = App.build_timeline(app, {"pct": 20.0, "resets": resets}, eta=10 * 3600)
+        tl = App.build_timeline(app, {"pct": 20.0, "resets": resets}, eta=10 * 3600, updated=now)
         self.assertFalse(tl["hit"])
-        self.assertEqual(tl["proj"][0], 1.0)
+        self.assertEqual(tl["proj"][0], 1.0)  # never past the end of the window
         self.assertLess(tl["proj"][1], 100)
         self.assertGreater(tl["proj"][1], 20)
+
+    def test_actual_line_ends_at_last_fetch_not_now(self):
+        now = time.time()
+        resets = dt.datetime.fromtimestamp(now + 2.5 * 3600, UTC)
+        app = SimpleNamespace(history=make_history())
+        tl = App.build_timeline(app, {"pct": 30.0, "resets": resets}, eta=None, updated=now - 1200)
+        self.assertAlmostEqual(tl["points"][-1][0], tl["last_x"])
+        self.assertLess(tl["last_x"], tl["now_x"] - 0.05)  # 20 min stale shows as a gap
+        self.assertIsNone(tl["proj"])                      # no estimate -> no projected path
+
+    def test_flat_usage_projects_flat(self):
+        now = time.time()
+        resets = dt.datetime.fromtimestamp(now + 3600, UTC)
+        app = SimpleNamespace(history=make_history())
+        tl = App.build_timeline(app, {"pct": 40.0, "resets": resets}, eta=float("inf"), updated=now)
+        self.assertEqual(tl["proj"], [1.0, 40.0])
+        self.assertFalse(tl["hit"])
 
 
 class FormattingTests(unittest.TestCase):
     def test_fmt_dur(self):
-        self.assertEqual(fmt_dur(4 * 3600 + 23 * 60), "4h23")
+        self.assertEqual(fmt_dur(4 * 3600 + 23 * 60), "4h 23m")
+        self.assertEqual(fmt_dur(4 * 3600 + 23 * 60, compact=True), "4h23m")
         self.assertEqual(fmt_dur(5 * 60), "5m")
         self.assertEqual(fmt_dur(10), "1m")
         self.assertEqual(fmt_dur(-5), "1m")

@@ -48,27 +48,40 @@ Clicking it opens a **card** with:
 - **Fades when idle** (optional): content opacity 0.62 unless the mouse is over it.
 - **Draggable** anywhere, including onto the taskbar. The position is saved and clamped onto a visible monitor. *Reset position* puts it back.
 - **Click** toggles the card. **Right-click** opens a native Windows menu: show details, refresh, pill style, start with Windows, reset position, data folder, quit.
-- A small amber dot appears when the last fetch failed and the values shown are stale.
+- **Stale = muted.** When the values aren't fresh, the numbers and fills turn grey and an amber dot appears. Hovering the pill shows a tooltip such as "Offline · Last updated 14m ago". Stale means:
+  - showing cached or last-known values
+  - offline, rate-limited or sign-in expired
+  - an unexpected response
+  - the last success being more than 2 × the refresh interval + 60 s old
+- A window that **has reset since the last fetch** shows "—" and "updating" instead of the old %.
 - When there's no data it shows a status message on one line: "Sign in to see limits · run `claude` → `/login`", "Rate-limited, retrying", "Offline", and so on.
 
 ### Details card (360 px wide, height fits content)
 - **Header**: Claude spark logo, "Claude usage", plan chip (e.g. "Pro"), a view toggle (rings ↔ bars) and a settings gear.
 - **Rings view**: Session and Weekly rings (120 px) with gradient strokes, a glow, count-up numbers, a sweep-in animation when opened, and a pulse at 90% or more.
 - **Bars view**: TokenEater-style rows. Each has an icon, title, subtitle ("5h sliding window" / "All models"), a big gradient %, "Reset in 1h48" or "Reset Sun 10:00 PM", and a wide bar.
-- **Pace forecast** line, for example:
-  - "At this pace: limit in ~1h20" (amber; red if under 30 min)
-  - "you'll stay under until reset" (green)
-  - "Steady · not using the limit right now"
-  - "Pace forecast appears after a few minutes of use"
+- **Pace forecast** line. Deliberately coarse and honest:
+  - "At this pace, limit in ~1h 15m" (amber; red under 30 min). ETAs are rounded: "under 10 min", 5-minute steps under an hour, then 15 or 30 minutes.
+  - "At this pace, you'll reach the limit around reset time": the estimate is within ±10% of the reset, a band that stops it flip-flopping.
+  - "At this pace, you'll stay under the limit until reset" (green)
+  - "Steady · no current pace toward the limit": flat or falling usage, so no exhaustion time is made up.
+  - "Not enough recent activity to estimate": thin history.
+  - "Forecast paused until data refreshes": stale data.
+  - "Limit reached · resets in 1h 48m"
 - **5-hour timeline** (SVG):
-  - the usage line across the current window (start → reset), with an area fill
+  - a legend: **Actual** (solid accent line) and **Projected** (thin, dashed, muted grey; it never looks like measured data)
+  - the actual line runs from the window start to the **last fetch**, not to "now". A faint dotted tick marks "now" when the two differ
+  - the projection starts at the last fetch and uses the same estimate as the forecast text, so where it meets 100% is the displayed ETA
+  - the projection is hidden when there's no estimate or the data is stale, and never goes past the reset
+  - an area fill under the actual line
   - a dotted 100% line and grid ticks
   - a "now" dot with a pulsing halo
   - a dashed projection to where 100% is reached, or to the window's end
   - start, now and end time labels, with collision avoidance
-- **Claude Code activity**: three stat tiles. Today's tokens and replies, last-7-days tokens, and tokens per minute right now plus active sessions.
+- **Claude Code activity**: three stat tiles with explicit units. "tokens today" (plus N responses), "tokens, 7 days", and "tokens/min" (plus active sessions or idle).
+  A hover tooltip explains what's counted: input + output + cache-write tokens, no cache reads, no claude.ai chats; responses include tool steps; tokens/min is the 10-minute average.
 - **Heatmap**: 7 days × 24 hours of Claude Code tokens, with a hover tooltip ("Tue 3 PM · 45k tokens").
-- **Footer**: "Updated just now / Nm ago" (plus "… last values" when stale) and a live dot showing the refresh interval.
+- **Footer**: "Updated just now / Nm ago / Nh Mm ago". When stale it turns amber and reads like "Last updated 14m ago · Offline", the live dot turns amber, and the limits section is dimmed. Same rule as the pill.
 - **Settings panel** (gear), saved immediately:
   - pill style
   - theme (Auto / Dark / Light)
@@ -91,9 +104,9 @@ Clicking it opens a **card** with:
 
   Clicking the button toggles the card. *Close window* quits.
 - **Notifications** (Windows toasts via the tray icon):
-  - crossing 75% and 90%, separately for session and weekly, once per window
-  - when a window resets
-  - when you're on pace to hit the 5-hour limit within 30 minutes (once per window, only below 90%)
+  - crossing 75% and 90%, separately for session and weekly, once per window. Saved in `state.json`, so restarts and wake-ups don't repeat them. Never sent from cached or stale values.
+  - when a window resets, once per transition, and only if the reset was within the last 30 minutes. A reset that happened while the PC was asleep doesn't produce a late toast.
+  - when you're on pace to hit the 5-hour limit within 30 minutes. It needs the "hit" verdict on fresh data and is sent at most once per window (also saved in `state.json`).
 - **Start with Windows** through the HKCU `Run` registry key, pointing at the project's `.venv\Scripts\pythonw.exe`.
 - **Hides itself during fullscreen apps** (games, video) on the pill's monitor.
 - **Follows the Windows light/dark theme** when theme is `auto`. It checks every second and restyles live.
@@ -104,7 +117,9 @@ Clicking it opens a **card** with:
   - the shortcut carries the same AppUserModelID as the running app, so a pinned shortcut and the live taskbar button are one icon
 
 ### Reliability
-- **Offline / rate-limit fallback**: on start-up and on any error, it shows the last known values from history, with a stale marker.
+- **Offline / rate-limit fallback**: on start-up and on any error, it shows the last known values from history, clearly marked stale.
+- **Unrecognised response**: if the API answers with no known windows, it's treated as an error ("Unexpected response"). The last values are kept and marked stale, never replaced by blanks or 0%. Only the response's key names are logged.
+- **Reset boundary**: when a reset time passes, the widget asks for fresh data **once** for that window. It used to request every second while the API still reported the old reset.
 - **429 backoff**: waits double each time, from 120 s up to 900 s, on top of the interval.
 - **Sleep-safe timing**: waits are split into 5-second steps against the real clock, because Windows timed waits pause during sleep.
 - **Wake detection**: a gap of more than 30 s between loop ticks logs "resumed after Ns", refreshes immediately and re-captures the glass backdrop.
@@ -280,7 +295,7 @@ flowchart LR
   - `ok`
   - `signin` (no token)
   - `expired` (401/403 after a refresh attempt)
-  - `error` (HTTP 429 → "Rate-limited, retrying"; network → "Offline"; other → "HTTP n"; also "Starting" or "Reconnecting" while showing cached values)
+  - `error` (HTTP 429 → "Rate-limited, retrying"; network → "Offline"; no known windows → "Unexpected response"; other → "HTTP n"; also "Starting" (shown as "Connecting") or "Reconnecting" while showing cached values)
 - **Rate limits**: polling every 60 s plus several quick restarts did trigger 429s. That's why the default is 120 s and there's exponential backoff.
   **Don't restart the app in a tight loop while testing against the real API.** Use `--demo`.
 
@@ -317,15 +332,21 @@ flowchart LR
 ### 6.4 View model (`App.build_model`)
 A plain dict, serialised to JSON and passed to `update(m)` in the pages. Keys:
 - `theme`, `status`, `error`, `plan`
-- `rows[]`: `{key, title, sub, short, pct, pct_i, level ok|warn|crit, reset_short, reset_card}`. Session first, then weekly, then any model windows.
-- `forecast{text, level}`
-- `timeline{points[[x,pct]], now_x, now_pct, proj[x,pct]|null, hit, start_label, end_label, level}`. x runs from 0 to 1 across the 5 hours.
+- `rows[]`: `{key, title, sub, short, pct, pct_i, level ok|warn|crit, pending, reset_short, reset_card}`. Session first, then weekly, then any model windows.
+  - `pct_i = display_pct(pct)`: rounds half up, and **never shows 100 below 100%** (99.6 → 99).
+  - `pending = True` when the window's reset time has passed but the last fetch is from before it. `pct_i` is then `None` (shown as "—").
+  - `reset_short` is compact for the pill ("2h49m", "Sun 10PM", "updating"); `reset_card` is full ("Resets in 2h 49m", "Resets Sun 10:00 PM").
+- `fresh{state fresh|stale|none, label, reason}`: from `freshness()`. **The single source of truth** for staleness in the pill, card, tray and taskbar.
+- `forecast{text, level}` and `verdict`:
+  - `verdict` is one of `reached | unknown | steady | hit | around_reset | under | stale`, from `forecast_verdict()`
+  - `eta` is the seconds from now to 100% (`eta_seconds − age of the last fetch`)
+- `timeline{points[[x,pct]], last_x, now_x, now_pct, proj[x,pct]|null, hit, start_label, end_label, level}`. x runs from 0 to 1 across the 5 hours. The actual data ends at `last_x`, which is the last fetch.
 - `stats{today, msgs, week, burn, active, heat[7][24], day_labels}`
 - `updated`, `interval`, `view`
 - `settings`: the config plus `autostart`
 - `eta`
 
-The **pill gets a slim subset**: `theme, status, error, rows, settings`, plus `stats.today` only when there are no rows.
+The **pill gets a slim subset**: `theme, status, error, rows, settings, fresh`, plus `stats.today` only when there are no rows.
 Its JSON is compared with the last one sent, and the pill is only re-rendered when it changes.
 The card gets the full model, only while open and only when it changed.
 
@@ -500,12 +521,29 @@ What's left: about 72 MB is Python plus .NET/WinForms, about 37 MB the WebView2 
 16. **`.pyw` association ≠ your test Python.** Test launches through the shortcut or `Start-Process <file>.pyw`, not only `python file.pyw`.
 17. **Pill payload is deliberately slim.** If the pill needs a new field, add it to `pill_model` in `App.push`.
 18. A screen capture during testing **won't show the pill's own pixels** during its glass grab, which happens every 6 s. That's harmless.
+19. **Never build all forecast texts eagerly.** `fmt_eta(inf)` raises. An eager dict of every verdict's text once crashed `build_model` on flat usage. Only format the ETA in the `hit` branch.
+20. **Staleness has one rule: `freshness()`.** Don't add status checks in JS (the old pill only checked `status === 'error'`, so "expired" looked fresh). Read `m.fresh.state`.
+21. **The ETA is measured from the last sample, not from now.** Use `eta − (now − updated)` for anything shown to the user, and start the projection at `last_x`.
+22. **Don't trigger a refresh on every tick.** Anything that calls `refresh_now()` from `loop` or `check_alerts` must be limited (see `reset_refreshed`).
+23. Tests use `App.__new__` with fake limits, tray and store (`tests/test_refinement.py`). Keep `build_model` and `check_alerts` free of window/Win32 calls apart from `W.autostart_enabled()`, which is read-only.
 
 ---
 
 ## 13. Testing
 
-- **Unit tests**: run `.venv\Scripts\python.exe -m unittest discover -s tests -v`. 14 tests, about 0.03 s. They cover:
+- **Unit tests**: run `.venv\Scripts\python.exe -m unittest discover -s tests -v`. **33 tests**, about 0.03 s.
+  - `tests/test_refinement.py` (19) covers:
+    - display rounding and coarse ETAs
+    - the freshness states, including expired and rate-limited
+    - every forecast verdict
+    - API values reaching the model unchanged
+    - a window that reset since the last fetch
+    - stale data pausing the forecast and projection
+    - **forecast text = chart intersection**
+    - not hitting before reset, flat usage, thin history
+    - alerts: once per window, independent session/weekly, surviving a restart, none from cached values, the forecast alert once, the reset alert only when timely, one refresh per reset
+    - an unrecognised response keeping the last values
+  - `tests/test_core.py` covers:
   - ISO parsing
   - `reset_key` jitter tolerance
   - usage-response parsing, including hidden and visible model limits and null windows
@@ -514,6 +552,7 @@ What's left: about 72 MB is Python plus .NET/WinForms, about 37 MB the WebView2 
   - timeline projection, hit and no-hit
   - `fmt_dur`, `fmt_tokens`, `level`
   - LogScanner de-duplication, cache-read exclusion, partial lines and active sessions
+- **Simulated outage**: set `CUW_DEMO_OFFLINE=1` before starting demo mode, and after 25 s the demo fetcher reports "Offline". That lets you check the stale UI (muted values, amber footer, paused forecast, no projection) for real.
 - **Demo mode**: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw --demo`.
   The 5-hour % rises about 6%/min, the history is seeded so the forecast and timeline show right away, nothing is written to `history.jsonl`, and the real API is never called.
 - **Manual or visual checks used so far**:
@@ -616,3 +655,25 @@ The user asked for a taskbar widget showing Claude usage, updated live, and aske
 
 ### This document (2026-11-15)
 - Added `docs/ARCHITECTURE.md` and a short root `CLAUDE.md` for coding agents.
+
+### Trust-and-clarity refinement (2026-11-15, from `claude_usage_widget_final_prd.md`)
+The goal was an audit-first pass with minimal changes; no new features or sections.
+- **Defects fixed:**
+  - a sign-in-expired (401/403) state showed old values as if fresh
+  - cached values whose window had already reset showed the old % with a "1m" countdown
+  - the chart drew stale data as measured "now", and the projection and ETA were measured from now instead of the last sample
+  - `check_alerts` called `refresh_now()` every second after a reset while the API lagged (a 429 risk)
+  - an unrecognised API response became "ok" with no rows
+  - the forecast alert could repeat after a restart
+  - reset toasts arrived hours late after sleep
+  - 99.6% showed as "100%", and banker's rounding applied
+- **Clarity changes:**
+  - one `freshness()` rule; stale values are muted everywhere, with an amber footer like "Last updated … · reason"
+  - coarse ETAs plus an "around reset time" band
+  - PRD wording for the no-estimate and steady states
+  - an Actual/Projected legend; the projection is thin, dashed and grey, starts at the last fetch and is hidden when stale or unknown
+  - "Resets in 2h 49m" / "Resets Sun 10:00 PM" copy
+  - activity tiles with units and a hover note on what's counted
+  - the ring pill uses short labels so it doesn't wrap
+- **Unchanged:** the authentication and refresh flow, curl, `reset_key()`, backoff, sleep/wake handling, the watchdog, threshold defaults (75/90), the visual identity and the pill sizes.
+- **Added:** `tests/test_refinement.py` (19 tests) and the demo-only `CUW_DEMO_OFFLINE` switch. Two bugs in the new code were caught by those tests before shipping: the eager-forecast crash and "~60 min".

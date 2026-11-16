@@ -46,6 +46,10 @@ class HttpError(Exception):
         self.code = code
 
 
+class UnexpectedResponse(Exception):
+    """The usage endpoint answered, but not with any window we recognise."""
+
+
 CURL = shutil.which("curl.exe") or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                                                  "System32", "curl.exe")
 
@@ -156,6 +160,8 @@ class LimitsFetcher(threading.Thread):
 
     def _parse(self, resp):
         out = {}
+        if not isinstance(resp, dict):
+            return out
         for key, val in resp.items():
             if not isinstance(val, dict) or val.get("utilization") is None:
                 continue
@@ -183,6 +189,10 @@ class LimitsFetcher(threading.Thread):
 
     def poll_once(self):
         if self.demo:
+            if os.environ.get("CUW_DEMO_OFFLINE") and time.time() - self.t0 > 25:
+                with self.lock:  # demo-only: simulate losing the network to check stale UI
+                    self.status, self.error = "error", "Offline"
+                return
             w = self._demo()
             with self.lock:
                 self.windows, self.plan, self.status = w, "Pro", "ok"
@@ -210,6 +220,10 @@ class LimitsFetcher(threading.Thread):
                 else:
                     raise
             windows = self._parse(resp)
+            if not windows:
+                # Never show an unrecognised response as "0%": keep the last values, flag stale.
+                keys = sorted(resp)[:12] if isinstance(resp, dict) else type(resp).__name__
+                raise UnexpectedResponse(f"no known usage windows (keys: {keys})")
             with self.lock:
                 self.windows, self.plan, self.status, self.error = windows, plan, "ok", ""
                 self.updated = time.time()
@@ -226,6 +240,10 @@ class LimitsFetcher(threading.Thread):
                     self.status, self.error = "error", f"HTTP {e.code}"
             if e.code == 429:
                 self.backoff = min(max(self.backoff * 2, 120), 900)
+        except UnexpectedResponse as e:
+            log.warning("usage response: %s", e)
+            with self.lock:
+                self.status, self.error = "error", "Unexpected response"
         except Exception as e:
             log.warning("usage fetch failed: %r", e)
             with self.lock:

@@ -16,7 +16,7 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
 - the change history
 
 ## Commands
-- Run: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw` (add `--demo` for fake data that never calls the API)
+- Run: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw` (add `--demo` for fake data that never calls the API; also set `CUW_DEMO_OFFLINE=1` and demo mode goes "offline" after 25 s, so you can check the stale UI)
 - Tests: `.venv\Scripts\python.exe -m unittest discover -s tests -v`
 - Install / repair the app (venv, shortcuts, icon, autostart): `Install.bat`
 - Stop it: tray icon → Quit, or the right-click pill menu → Quit
@@ -43,5 +43,7 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
 - `Api` must expose only methods; pywebview walks its public attributes.
 - Keep JS globals and SVG gradient ids unique.
 - If the pill needs a new field, add it to `pill_model` in `App.push`.
+- Product principle: **glance and go; trust over extra information.** Session % and weekly % are the story. Don't add analytics to the pill or new card sections without a demonstrated need.
+- Staleness has one rule, `freshness()`; read `m.fresh.state` in JS. The ETA is measured from the last fetch (`m.eta` is already "from now"). Actual and projected data must stay visually distinct.
 - Secrets (the OAuth token) never go on a command line, in the log or in the repo. Credentials live in `~/.claude/.credentials.json`.
 - Keep `docs/ARCHITECTURE.md` updated, especially the *Gotchas* and *Change history* sections, when behaviour changes.

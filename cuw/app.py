@@ -1,6 +1,7 @@
 """The widget: two WebView2 windows (pill + card), the update loop, alerts and glue."""
 import datetime as dt
 import json
+import math
 import os
 import threading
 import time
@@ -45,16 +46,86 @@ def fmt_tokens(n):
     return f"{int(n)}"
 
 
-def fmt_dur(secs):
+def fmt_dur(secs, compact=False):
+    """Countdown text: '1h 48m' (card) or '1h48m' (pill). Never shows less than 1m."""
     secs = max(0, int(secs))
     d, rem = divmod(secs, 86400)
     h, rem = divmod(rem, 3600)
     m = rem // 60
+    sep = "" if compact else " "
     if d:
-        return f"{d}d {h}h"
+        return f"{d}d{sep}{h}h"
     if h:
-        return f"{h}h{m:02d}"
+        return f"{h}h{sep}{m}m"
     return f"{max(m, 1)}m"
+
+
+def display_pct(p):
+    """Whole-number % for display: round half up, but never show 100% below the limit."""
+    i = int(math.floor(p + 0.5))
+    return min(i, 99) if p < 100 else i
+
+
+def fmt_eta(secs):
+    """Deliberately coarse time-to-limit, so the estimate doesn't jitter between polls."""
+    m = max(0.0, secs) / 60
+    if m < 10:
+        return "under 10 min"
+    r5 = int(5 * round(m / 5))
+    if r5 < 60:
+        return f"~{r5} min"
+    step = 15 if m < 180 else 30
+    m = step * round(m / step)
+    h, mm = divmod(int(m), 60)
+    return f"~{h}h" if not mm else f"~{h}h {mm}m"
+
+
+def fmt_age(secs):
+    secs = max(0, int(secs))
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    h, m = divmod(secs // 60, 60)
+    return f"{h}h {m}m ago" if h < 24 else f"{h // 24}d ago"
+
+
+def freshness(status, error, updated, has_rows, interval, now=None):
+    """One rule, shared by pill, card, tray and taskbar.
+    fresh = last fetch succeeded recently; stale = showing last-known values; none = no values."""
+    now = now or time.time()
+    if not has_rows:
+        return {"state": "none", "label": "", "reason": ""}
+    age = now - updated if updated else None
+    age_txt = f"Updated {fmt_age(age)}" if age is not None else "Not updated yet"
+    if status == "ok" and age is not None and age <= 2 * interval + 60:
+        return {"state": "fresh", "label": age_txt, "reason": ""}
+    reason = {"expired": "Sign-in expired", "signin": "Not signed in"}.get(status) or error \
+        or "Not updated recently"
+    if reason == "Starting":
+        reason = "Connecting"
+    return {"state": "stale", "label": f"Last {age_txt.lower()}" if age is not None else age_txt,
+            "reason": reason}
+
+
+def forecast_verdict(pct, eta_now, left):
+    """Pace verdict for the 5-hour window. eta_now: seconds from now to 100% (None = not
+    enough data, inf = flat/declining). left: seconds until the window resets.
+    A +/-10% band around the reset avoids flip-flopping on small slope changes."""
+    if pct >= 100:
+        return "reached"
+    if eta_now is None:
+        return "unknown"
+    if eta_now == float("inf"):
+        return "steady"
+    if left is None or left <= 0:
+        return "unknown"
+    ratio = eta_now / left
+    if ratio < 0.9:
+        return "hit"
+    if ratio <= 1.1:
+        return "around_reset"
+    return "under"
 
 
 def fmt_clock(t):
@@ -140,7 +211,7 @@ class App:
         self.card_h = 600
         self.dragging = False
         self.hidden_fs = False
-        self.forecast_alerted = None
+        self.reset_refreshed = set()
         self.last_pill_bd = 0
         self.last_pill_url = None
         self.last_payload = {}
@@ -405,7 +476,7 @@ class App:
             return
         # The pill only needs a few fields; sending it the whole card model would
         # repaint it every second or two (the timeline's "now" keeps moving).
-        pill_model = {k: model[k] for k in ("theme", "status", "error", "rows", "settings")}
+        pill_model = {k: model[k] for k in ("theme", "status", "error", "rows", "settings", "fresh")}
         if not model["rows"] and model["stats"]:
             pill_model["stats"] = {"today": model["stats"]["today"]}
         pill_payload = json.dumps(pill_model)
@@ -496,6 +567,9 @@ class App:
     def build_model(self):
         lim, stats = self.limits.snapshot(), self.logs.snapshot()
         now = now_utc()
+        nowt = time.time()
+        interval = 3 if self.demo else self.store.cfg["limits_refresh_seconds"]
+        updated = lim["updated"]
         rows = []
         order = ["five_hour", "seven_day"] + sorted(
             k for k in lim["windows"] if k not in ("five_hour", "seven_day"))
@@ -505,38 +579,56 @@ class App:
                 continue
             r = w["resets"]
             left = (r - now).total_seconds() if r else None
+            # Data fetched before this window's reset no longer describes the current window.
+            pending = bool(r and left <= 0 and (not updated or updated < r.timestamp()))
+            if pending:
+                reset_short, reset_card = "updating", "Reset · updating"
+            elif key == "five_hour":
+                reset_short = fmt_dur(left, compact=True) if r else ""
+                reset_card = ("Resets in " + fmt_dur(left)) if r else ""
+            else:
+                reset_short = fmt_short_day(r) if r else ""
+                reset_card = ("Resets " + fmt_day_time(r)) if r else ""
             rows.append(dict(
                 key=key, title=w["title"], sub=w["sub"], short=w["short"],
-                pct=round(w["pct"], 1), pct_i=int(round(w["pct"])), level=level(w["pct"]),
-                reset_short=(fmt_dur(left) if key == "five_hour" else fmt_short_day(r)) if r else "",
-                reset_card=("in " + fmt_dur(left) if key == "five_hour" else fmt_day_time(r)) if r else "",
-            ))
+                pct=0.0 if pending else round(w["pct"], 1),
+                pct_i=None if pending else display_pct(w["pct"]),
+                level="ok" if pending else level(w["pct"]), pending=pending,
+                reset_short=reset_short, reset_card=reset_card))
 
-        forecast, timeline, eta = None, None, None
+        fresh = freshness(lim["status"], lim["error"], updated, bool(rows), interval, nowt)
+        forecast, timeline, eta_now, verdict = None, None, None, None
         five = lim["windows"].get("five_hour")
-        if five and lim["status"] in ("ok", "error"):
+        five_row = next((r for r in rows if r["key"] == "five_hour"), None)
+        if five and five_row and not five_row["pending"]:
             eta = self.history.eta_seconds("five_hour", five)
-            left = (five["resets"] - now).total_seconds() if five["resets"] else None
-            if five["pct"] >= 100:
-                forecast = {"text": "Limit reached — resets in " + fmt_dur(left or 0), "level": "crit"}
-            elif eta is None:
-                forecast = {"text": "Pace forecast appears after a few minutes of use", "level": "muted"}
-            elif eta == float("inf"):
-                forecast = {"text": "Steady · not using the limit right now", "level": "muted"}
-            elif left is not None and eta < left:
-                forecast = {"text": f"At this pace: limit in ~{fmt_dur(eta)}",
-                            "level": "crit" if eta < 1800 else "warn"}
+            age = nowt - updated if updated else 0
+            if eta is not None and eta != float("inf"):
+                eta_now = eta - age  # the estimate is measured from the last sample
             else:
-                forecast = {"text": "At this pace: you'll stay under until reset", "level": "ok"}
+                eta_now = eta
+            left = (five["resets"] - now).total_seconds() if five["resets"] else None
+            if fresh["state"] == "stale":
+                verdict = "stale"
+                forecast = {"text": "Forecast paused until data refreshes", "level": "muted"}
+            else:
+                verdict = forecast_verdict(five["pct"], eta_now, left)
+                if verdict == "reached":
+                    forecast = {"text": "Limit reached · resets in " + fmt_dur(left or 0), "level": "crit"}
+                elif verdict == "hit":  # only here is eta_now a finite number
+                    forecast = {"text": f"At this pace, limit in {fmt_eta(eta_now)}",
+                                "level": "crit" if eta_now < 1800 else "warn"}
+                else:
+                    forecast = {
+                        "unknown": {"text": "Not enough recent activity to estimate", "level": "muted"},
+                        "steady": {"text": "Steady · no current pace toward the limit", "level": "muted"},
+                        "around_reset": {"text": "At this pace, you'll reach the limit around reset time",
+                                         "level": "warn"},
+                        "under": {"text": "At this pace, you'll stay under the limit until reset",
+                                  "level": "ok"},
+                    }[verdict]
             if five["resets"]:
-                timeline = self.build_timeline(five, eta)
-
-        if lim["updated"]:
-            ago = time.time() - lim["updated"]
-            updated = "Updated just now" if ago < 60 else f"Updated {int(ago // 60)}m ago"
-        else:
-            updated = "Not updated yet"
-        interval = 3 if self.demo else self.store.cfg["limits_refresh_seconds"]
+                timeline = self.build_timeline(five, None if verdict == "stale" else eta, updated or nowt)
 
         st = None
         if stats:
@@ -546,50 +638,63 @@ class App:
         settings = dict(self.store.cfg, autostart=W.autostart_enabled())
         return dict(theme="light" if self.light else "dark", status=lim["status"],
                     error=lim["error"], plan=lim["plan"], rows=rows, forecast=forecast,
-                    timeline=timeline, stats=st, updated=updated,
+                    timeline=timeline, stats=st, fresh=fresh, updated=fresh["label"],
                     interval=f"{interval}s" if interval < 120 else f"{interval // 60} min",
                     view=self.store.state.get("view", "rings"), settings=settings,
-                    eta=None if eta in (None, float("inf")) else eta)
+                    verdict=verdict,
+                    eta=None if eta_now in (None, float("inf")) else round(eta_now))
 
-    def build_timeline(self, five, eta):
+    def build_timeline(self, five, eta, updated):
+        """Chart for the current 5-hour window. Actual data ends at the last fetch (not at
+        'now'); the projection starts there and uses the same estimate as the forecast text,
+        so where it meets 100% matches the displayed time-to-limit. Never extends past reset."""
         end = five["resets"].timestamp()
         start = end - FIVE_HOURS
-        nowt = time.time()
         span = FIVE_HOURS
+        clamp = lambda x: round(min(max(x, 0.0), 1.0), 4)
         pts = [(0.0, 0.0)]
         for t, p in self.history.series("five_hour", five["resets"]):
-            if t >= start:
-                pts.append((round((t - start) / span, 4), p))
-        now_x = round(min(max((nowt - start) / span, 0), 1), 4)
-        pts.append((now_x, five["pct"]))
+            if start <= t < updated:
+                pts.append((clamp((t - start) / span), p))
+        last_x = clamp((updated - start) / span)
+        pts.append((last_x, five["pct"]))
         pts.sort()
+        now_x = clamp((time.time() - start) / span)
         proj, hit = None, False
-        if eta is not None:
+        if eta is not None and five["pct"] < 100:
             if eta == float("inf"):
                 proj = [1.0, five["pct"]]
             else:
-                hit_x = now_x + eta / span
+                hit_x = last_x + eta / span
                 if hit_x <= 1:
                     proj, hit = [round(hit_x, 4), 100.0], True
                 else:
-                    proj = [1.0, round(five["pct"] + (100 - five["pct"]) * (1 - now_x) / (hit_x - now_x), 1)]
+                    slope = (100 - five["pct"]) / (hit_x - last_x)
+                    proj = [1.0, round(five["pct"] + slope * (1 - last_x), 1)]
         st = dt.datetime.fromtimestamp(start, dt.timezone.utc)
-        return dict(points=pts, now_x=now_x, now_pct=five["pct"], proj=proj, hit=hit,
-                    start_label=fmt_clock(st), end_label=fmt_clock(five["resets"]),
+        return dict(points=pts, last_x=last_x, now_x=now_x, now_pct=five["pct"], proj=proj,
+                    hit=hit, start_label=fmt_clock(st), end_label=fmt_clock(five["resets"]),
                     level=level(five["pct"]))
 
     # ------------------------------------------------------------ tray / taskbar
     def update_icons(self, m):
-        if m["rows"]:
-            five = m["rows"][0]
-            color = COLORS[five["level"]]
+        five = m["rows"][0] if m["rows"] else None
+        if five and not five["pending"]:
+            stale = m["fresh"]["state"] == "stale"
+            color = COLORS["none"] if stale else COLORS[five["level"]]
             tip = f"Claude · {five['title']} {five['pct_i']}%"
             if five["reset_short"]:
                 tip += f" (resets in {five['reset_short']})"
-            if len(m["rows"]) > 1:
+            if len(m["rows"]) > 1 and m["rows"][1]["pct_i"] is not None:
                 tip += f" · {m['rows'][1]['title']} {m['rows'][1]['pct_i']}%"
+            if stale:
+                tip += f" · {m['fresh']['reason']}, {m['fresh']['label'].lower()}"
             self.tray.update(five["pct"], color, tip)
-            self.host.update(five["pct"], color, f"Claude {five['pct_i']}% · {five['reset_short']}")
+            self.host.update(five["pct"], color, f"Claude {five['pct_i']}% · {five['reset_short']}"
+                             + (" (stale)" if stale else ""))
+        elif five:
+            self.tray.update(None, COLORS["none"], "Claude · limit reset, updating…")
+            self.host.update(None, COLORS["none"], "Claude usage · updating")
         else:
             self.tray.update(None, COLORS["none"], "Claude usage — run `claude` then /login")
             self.host.update(None, COLORS["none"], "Claude usage")
@@ -612,7 +717,8 @@ class App:
             prev = last.get(key)
             if prev and prev.get("rkey") != rkey and cfg["alert_on_reset"]:
                 pr = parse_iso(prev.get("resets"))
-                if pr and pr <= now and prev.get("pct", 0) >= 1:
+                # only a timely alert: skip resets that happened long ago (asleep / not running)
+                if pr and now - dt.timedelta(minutes=30) <= pr <= now and prev.get("pct", 0) >= 1:
                     self.tray.notify(f"Claude {name} reset", f"You're back to {w['pct']:.0f}%.")
             if not prev or prev.get("rkey") != rkey or abs(prev.get("pct", 0) - w["pct"]) >= 0.5:
                 last[key] = {"rkey": rkey, "pct": w["pct"],
@@ -626,16 +732,20 @@ class App:
                     when = f" Resets {fmt_day_time(w['resets'])}." if w["resets"] else ""
                     self.tray.notify(f"Claude {name}: {w['pct']:.0f}% used",
                                      f"You've crossed {th}% of your {name.lower()}.{when}")
-            if w["resets"] and w["resets"] <= now:
+            # A reset just passed: fetch the new window once (not every second while the
+            # API still reports the old reset time).
+            if w["resets"] and w["resets"] <= now and rkey not in self.reset_refreshed:
+                self.reset_refreshed.add(rkey)
                 self.limits.refresh_now()
             if key == "five_hour" and cfg["alert_on_forecast"]:
                 eta = model.get("eta")
-                left = (w["resets"] - now).total_seconds() if w["resets"] else None
-                if eta and eta < 1800 and left and eta < left and w["pct"] < 90 \
-                        and self.forecast_alerted != rkey:
-                    self.forecast_alerted = rkey
+                # needs a real estimate on fresh data; saved in state so restarts don't repeat it
+                if model.get("verdict") == "hit" and eta is not None and eta < 1800 \
+                        and w["pct"] < 90 and "forecast" not in fired:
+                    fired.append("forecast")
+                    changed = True
                     self.tray.notify("Claude: limit ahead",
-                                     f"At this pace you'll hit the 5-hour limit in ~{fmt_dur(eta)}.")
+                                     f"At this pace you'll hit the 5-hour limit in {fmt_eta(eta)}.")
         while len(fired_all) > 40:
             del fired_all[next(iter(fired_all))]
         if changed:
