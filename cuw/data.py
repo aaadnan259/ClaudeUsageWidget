@@ -58,7 +58,7 @@ def http_json(url, headers, body=None):
         args = [CURL, "-sS", "--max-time", "20", "-H", "@-", "-w", "\n%{http_code}"]
         tmp = None
         if body is not None:
-            tmp = os.path.join(DATA_DIR, f".req-{os.getpid()}.json")
+            tmp = os.path.join(DATA_DIR, f".req-{os.getpid()}-{threading.get_ident()}-{time.time_ns()}.json")
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(body)
             args += ["-X", "POST", "--data-binary", "@" + tmp]

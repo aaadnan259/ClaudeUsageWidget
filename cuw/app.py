@@ -177,7 +177,8 @@ class App:
         self.scale = W.dpi_scale(self.pill_hwnd)
         W.style_popup(self.pill_hwnd, not self.light)
         W.style_popup(self.card_hwnd, not self.light)
-        self.host = W.NativeHost(self.store.cfg["taskbar_button"], self.toggle_card, self.quit)
+        self.host = W.NativeHost(self.store.cfg["taskbar_button"], self.toggle_card, self.quit,
+                                 on_show=self.show_card)
         self.host.start()
         self.tray = Tray([
             ("Refresh now", None, self.limits.refresh_now),
@@ -447,6 +448,7 @@ class App:
                 now = time.time()
                 if now - last > 30:  # woke from sleep: fresh numbers + backdrop now
                     log.info("resumed after %.0fs", now - last)
+                    self.limits.heartbeat = now  # time asleep isn't a stuck thread
                     self.limits.refresh_now()
                     self.last_pill_bd = 0
                 last = now

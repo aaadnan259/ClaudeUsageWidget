@@ -4,12 +4,23 @@ A frosted-glass widget above your taskbar that shows your Claude plan limits liv
 Click it for the full card. The card has animated gradient rings or bars, a 5-hour timeline with a pace projection, Claude Code activity, a usage heatmap and settings.
 
 ## Setup
-1. Install dependencies (one time): `python -m pip install --user -r requirements.txt`
-   This installs pywebview, which uses Microsoft Edge WebView2. WebView2 is built into Windows 11.
-2. Sign the Claude Code CLI in to your account (one time): run `claude` in a terminal, then type `/login`.
-3. Start it: `pythonw claude_usage_widget.pyw`. It adds itself to *Start with Windows*.
+1. Sign the Claude Code CLI in to your account (one time): run `claude` in a terminal, then type `/login`.
+2. Double-click **`Install.bat`**. It does four things:
+   - creates the widget's own Python environment (`.venv`) with the exact package versions it needs
+   - adds a **Claude Usage Widget** app to the Start menu and Desktop, with its own icon
+   - turns on Start with Windows
+   - starts the widget
 
-Try it with fake numbers: `pythonw claude_usage_widget.pyw --demo`
+From then on, open it like any app, from the Start menu or the Desktop, and pin it to the taskbar if you like.
+Opening it while it's already running pops its card open.
+Run `Install.bat` again any time to repair it.
+To uninstall: run `.venv\Scripts\python.exe install.py --remove`, then delete the folder.
+
+Try it with fake numbers: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw --demo`
+
+### Troubleshooting
+- **Nothing appears:** look at `%APPDATA%\ClaudeUsageWidget\startup.log`. Start-up problems now also show an error box instead of failing silently.
+- **Double-clicking `claude_usage_widget.pyw` directly** works too: whichever Python Windows uses, it hands off to `.venv`. This matters because Windows can have several Pythons installed, and the one it picks for `.pyw` files may not have the widget's packages.
 
 ## Using it
 - **Click the pill** (or its taskbar button, or the tray icon) to open the card. Click elsewhere or press Esc to close it.
@@ -68,7 +79,9 @@ They cover:
 
 ## Project layout
 ```
-claude_usage_widget.pyw   entry point
+Install.bat / install.py  one-click setup: .venv, shortcuts, icon, autostart
+claude_usage_widget.pyw   entry point (hands off to .venv, start-up error reporting)
+assets/app.ico            app icon
 cuw/app.py                windows, update loop, alerts, view model
 cuw/data.py               Anthropic limits, history + forecast, log scanner
 cuw/winutil.py            Win32: placement, glass capture, autostart, taskbar button/menu

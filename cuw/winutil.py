@@ -329,6 +329,16 @@ class WNDCLASSW(ctypes.Structure):
 
 WM_APP_UPDATE = 0x8001
 WM_APP_MENU = 0x8002
+WM_APP_SHOW = 0x8003
+HOST_CLASS = APP + "Host"
+
+
+def signal_running_instance():
+    """Tell an already-running widget to open its card (used on a second launch)."""
+    hwnd = user32.FindWindowW(HOST_CLASS, None)
+    if hwnd:
+        user32.PostMessageW(hwnd, WM_APP_SHOW, 0, 0)
+    return bool(hwnd)
 
 
 class NativeHost(threading.Thread):
@@ -338,9 +348,10 @@ class NativeHost(threading.Thread):
     * native right-click menus at the cursor."""
     NOPROGRESS, NORMAL, ERROR, PAUSED = 0, 2, 4, 8
 
-    def __init__(self, show_button, on_click, on_quit):
+    def __init__(self, show_button, on_click, on_quit, on_show=None):
         super().__init__(daemon=True)
         self.show_button, self.on_click, self.on_quit = show_button, on_click, on_quit
+        self.on_show = on_show or on_click
         self.hwnd = None
         self.ready = threading.Event()
         self.pending = None      # (pct, color, title)
@@ -372,7 +383,7 @@ class NativeHost(threading.Thread):
         wc = WNDCLASSW()
         wc.lpfnWndProc = self._wndproc
         wc.hInstance = hinst
-        wc.lpszClassName = APP + "Host"
+        wc.lpszClassName = HOST_CLASS
         wc.hCursor = user32.LoadCursorW(None, 32512)
         user32.RegisterClassW(ctypes.byref(wc))
         self.msg_tb_created = user32.RegisterWindowMessageW("TaskbarButtonCreated")
@@ -459,6 +470,9 @@ class NativeHost(threading.Thread):
                 return 0
             if msg == WM_APP_MENU:
                 self._menu()
+                return 0
+            if msg == WM_APP_SHOW:
+                threading.Thread(target=self.on_show, daemon=True).start()
                 return 0
             if msg == self.msg_tb_created:
                 self._apply(force=True)
