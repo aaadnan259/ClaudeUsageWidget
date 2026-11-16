@@ -3,6 +3,8 @@
 A frosted-glass widget above your taskbar that shows your Claude plan limits live: **Session** (5-hour) and **Weekly**, the same numbers as the Claude app's usage screen.
 Click it for the full card. The card has animated gradient rings or bars, a 5-hour timeline with a pace projection, Claude Code activity, a usage heatmap and settings.
 
+For how it all works (architecture, design decisions, gotchas and change history), see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Setup
 1. Sign the Claude Code CLI in to your account (one time): run `claude` in a terminal, then type `/login`.
 2. Double-click **`Install.bat`**. It does four things:
@@ -89,4 +91,6 @@ cuw/tray.py               tray icon + notifications
 cuw/web/                  pill.html, card.html, glass.css
 tests/                    unit tests (stdlib unittest)
 legacy/                   previous tkinter version
+docs/ARCHITECTURE.md      full architecture + project context
+CLAUDE.md                 short notes for coding agents
 ```
