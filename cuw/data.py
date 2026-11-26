@@ -1,4 +1,5 @@
 """Data sources: plan limits (Anthropic), limit history + forecast, local Claude Code logs."""
+import bisect
 import datetime as dt
 import glob
 import json
@@ -309,6 +310,11 @@ class History:
             pct = max(0.0, 52 * (i / 130) ** 1.3)
             self.samples.append({"t": t, "w": {"five_hour": [pct, dt.datetime.fromtimestamp(
                 reset, dt.timezone.utc).isoformat()]}})
+        # A finished previous weekly window (demo weekly resets in 4d2h, so the last one was 7d earlier).
+        prev = dt.datetime.fromtimestamp(now + (4 * 24 + 2 - 7 * 24) * 3600, dt.timezone.utc).isoformat()
+        for i, pct in enumerate((12.0, 35.5, 58.0, 81.6, 81.6)):  # 3.5 to 6.5 days ago
+            self.samples.append({"t": now - (6.5 - 0.75 * i) * 86400, "w": {"seven_day": [pct, prev]}})
+        self.samples.sort(key=lambda s: s["t"])
 
     def _compact(self):
         try:
@@ -359,6 +365,32 @@ class History:
                     out.append((s["t"], v[0]))
         return out
 
+    def prev_window_peak(self, key, resets):
+        """Highest % recorded in the window before the one that resets at `resets`.
+
+        None when history has no earlier window for `key`. This is the peak the widget *saw*:
+        it only records while running. Cached per (window, sample count) because the model is
+        rebuilt every second."""
+        rk = reset_key(resets)
+        if not rk:
+            return None
+        with self.lock:
+            n = len(self.samples)
+            cache = getattr(self, "_peak_cache", None)
+            if cache and cache[0] == (key, rk, n):
+                return cache[1]
+            best = {}  # earlier window key -> peak pct
+            for s in self.samples:
+                v = s["w"].get(key)
+                if not v:
+                    continue
+                k = reset_key(parse_iso(v[1]))
+                if k and int(k) < int(rk):
+                    best[int(k)] = max(best.get(int(k), 0.0), v[0])
+            peak = best[max(best)] if best else None
+            self._peak_cache = ((key, rk, n), peak)
+        return peak
+
     def eta_seconds(self, key, w, min_span=240):
         """Seconds until 100% at the recent pace. None = not enough data, inf = not rising."""
         pts = [p for p in self.series(key, w["resets"]) if p[0] >= time.time() - 1800]
@@ -378,7 +410,8 @@ class History:
 
 # --------------------------------------------------------------------------- local logs
 class LogScanner(threading.Thread):
-    KEEP_DAYS = 8
+    WEEKS = 4                    # heatmap pages: this week + 3 earlier 7-day blocks
+    KEEP_DAYS = WEEKS * 7 + 1    # Claude Code itself deletes transcripts after ~30 days by default
 
     def __init__(self, store):
         super().__init__(daemon=True)
@@ -431,18 +464,19 @@ class LogScanner(threading.Thread):
     def _compute(self):
         now = time.time()
         today0 = dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        days = [(today0 - dt.timedelta(days=i)) for i in range(6, -1, -1)]
+        nd = self.WEEKS * 7
+        # Calendar days, oldest first; the last 7 are "this week" (today and the 6 days before).
+        days = [(today0 - dt.timedelta(days=i)) for i in range(nd - 1, -1, -1)]
         starts = [d.timestamp() for d in days]
-        daily = [0] * 7
-        heat = [[0] * 24 for _ in range(7)]
+        dheat = [[0] * 24 for _ in range(nd)]
         today = msgs = week = burn = 0
         active = set()
         for ts, tok, sess in self.events.values():
             if ts >= starts[0]:
-                week += tok
-                di = max(i for i, d in enumerate(starts) if ts >= d)
-                daily[di] += tok
-                heat[di][dt.datetime.fromtimestamp(ts).hour] += tok
+                di = bisect.bisect_right(starts, ts) - 1
+                dheat[di][dt.datetime.fromtimestamp(ts).hour] += tok
+                if di >= nd - 7:
+                    week += tok
             if ts >= starts[-1]:
                 today += tok
                 msgs += 1
@@ -450,8 +484,19 @@ class LogScanner(threading.Thread):
                 burn += tok
             if ts >= now - 300 and sess:
                 active.add(sess)
+        weeks = []  # newest first: weeks[0] is this week
+        for w in range(self.WEEKS):
+            lo = nd - 7 * (w + 1)
+            blk = days[lo:lo + 7]
+            heat = dheat[lo:lo + 7]
+            weeks.append(dict(
+                heat=heat, day_labels=[d.strftime("%a") for d in blk],
+                day_dates=[f"{d:%a} {d:%b} {d.day}" for d in blk],
+                label="Last 7 days" if w == 0 else f"{blk[0]:%b} {blk[0].day} – {blk[-1]:%b} {blk[-1].day}",
+                total=sum(map(sum, heat))))
         return dict(today=today, msgs=msgs, week=week, burn=burn / 10, active=len(active),
-                    daily=daily, heat=heat, day_labels=[d.strftime("%a") for d in days])
+                    daily=[sum(h) for h in weeks[0]["heat"]], heat=weeks[0]["heat"],
+                    day_labels=weeks[0]["day_labels"], weeks=weeks)
 
     def snapshot(self):
         with self.lock:

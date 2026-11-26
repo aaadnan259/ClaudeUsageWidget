@@ -589,8 +589,12 @@ class App:
             else:
                 reset_short = fmt_short_day(r) if r else ""
                 reset_card = ("Resets " + fmt_day_time(r)) if r else ""
+            prev_peak = None
+            if key == "seven_day" and r and not pending:
+                pk = self.history.prev_window_peak(key, r)
+                prev_peak = None if pk is None else display_pct(pk)
             rows.append(dict(
-                key=key, title=w["title"], sub=w["sub"], short=w["short"],
+                key=key, title=w["title"], sub=w["sub"], short=w["short"], prev_peak=prev_peak,
                 pct=0.0 if pending else round(w["pct"], 1),
                 pct_i=None if pending else display_pct(w["pct"]),
                 level="ok" if pending else level(w["pct"]), pending=pending,
@@ -634,7 +638,9 @@ class App:
         if stats:
             st = dict(today=fmt_tokens(stats["today"]), msgs=stats["msgs"],
                       week=fmt_tokens(stats["week"]), burn=fmt_tokens(stats["burn"]),
-                      active=stats["active"], heat=stats["heat"], day_labels=stats["day_labels"])
+                      active=stats["active"], heat=stats["heat"], day_labels=stats["day_labels"],
+                      weeks=[dict(w, total=fmt_tokens(w["total"]), empty=not w["total"])
+                             for w in stats.get("weeks", [])])
         settings = dict(self.store.cfg, autostart=W.autostart_enabled())
         return dict(theme="light" if self.light else "dark", status=lim["status"],
                     error=lim["error"], plan=lim["plan"], rows=rows, forecast=forecast,

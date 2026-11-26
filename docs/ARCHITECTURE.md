@@ -59,6 +59,7 @@ Clicking it opens a **card** with:
 ### Details card (360 px wide, height fits content)
 - **Header**: Claude spark logo, "Claude usage", plan chip (e.g. "Pro"), a view toggle (rings ↔ bars) and a settings gear.
 - **Rings view**: Session and Weekly rings (120 px) with gradient strokes, a glow, count-up numbers, a sweep-in animation when opened, and a pulse at 90% or more.
+- **Last week's peak** (weekly row only): "All models · last week 82%" in bars view, "Last week peaked at 82%" under the weekly ring. It's the highest weekly % *the widget recorded* in the previous weekly window (it only records while running, so it can under-read; the tooltip says so). Hidden when history has no earlier window, and while the weekly row is pending.
 - **Bars view**: TokenEater-style rows. Each has an icon, title, subtitle ("5h sliding window" / "All models"), a big gradient %, "Reset in 1h48" or "Reset Sun 10:00 PM", and a wide bar.
 - **Pace forecast** line. Deliberately coarse and honest:
   - "At this pace, limit in ~1h 15m" (amber; red under 30 min). ETAs are rounded: "under 10 min", 5-minute steps under an hour, then 15 or 30 minutes.
@@ -80,7 +81,11 @@ Clicking it opens a **card** with:
   - start, now and end time labels, with collision avoidance
 - **Claude Code activity**: three stat tiles with explicit units. "tokens today" (plus N responses), "tokens, 7 days", and "tokens/min" (plus active sessions or idle).
   A hover tooltip explains what's counted: input + output + cache-write tokens, no cache reads, no claude.ai chats; responses include tool steps; tokens/min is the 10-minute average.
-- **Heatmap**: 7 days × 24 hours of Claude Code tokens, with a hover tooltip ("Tue 3 PM · 45k tokens").
+- **Heatmap**: 7 days × 24 hours of Claude Code tokens, with a hover tooltip ("Tue Nov 18 3 PM · 45k tokens").
+  - A header shows the week ("Last 7 days" or "Nov 13 – Nov 19") and its token total, with ‹ › buttons to page back up to **3 earlier 7-day blocks** (4 weeks in all).
+  - ‹ is disabled past the oldest week that has any data; Claude Code deletes transcripts after ~30 days by default, so there's nothing older to show.
+  - All weeks share one colour scale so they can be compared by eye. Re-opening the card returns to the current week.
+  - The three stat tiles always describe today / the last 7 days, whichever week the grid shows.
 - **Footer**: "Updated just now / Nm ago / Nh Mm ago". When stale it turns amber and reads like "Last updated 14m ago · Offline", the live dot turns amber, and the limits section is dimmed. Same rule as the pill.
 - **Settings panel** (gear), saved immediately:
   - pill style
@@ -317,7 +322,7 @@ flowchart LR
   - It keeps a byte offset per file and reads only appended data.
   - A partial last line is buffered until its newline arrives.
   - If a file shrinks, it's re-read from the start.
-  - Files untouched for more than 8 days are skipped.
+  - Files untouched for more than `KEEP_DAYS` (29) days are skipped, and older events are dropped from memory.
 - Only lines containing `"usage"` are parsed.
   - Event key: `(message.id, requestId)`, which de-duplicates streamed repeats.
   - Tokens counted: `input + output + cache_creation`. **Cache reads are excluded**, otherwise they'd swamp everything.
@@ -327,6 +332,7 @@ flowchart LR
   - burn rate: tokens in the last 10 min ÷ 10
   - active sessions: distinct `sessionId` in the last 5 min
   - daily totals, and a 7×24 hour-by-day heatmap grid
+  - `weeks[4]`, newest first: rolling 7-day blocks ending today, each `{heat[7][24], day_labels, day_dates, label, total}`. `heat`/`daily`/`day_labels` at the top level are `weeks[0]`, kept for existing callers.
 - **claude.ai chat usage is not in these logs**, but it *is* counted in the plan %.
 
 ### 6.4 View model (`App.build_model`)
@@ -341,7 +347,8 @@ A plain dict, serialised to JSON and passed to `update(m)` in the pages. Keys:
   - `verdict` is one of `reached | unknown | steady | hit | around_reset | under | stale`, from `forecast_verdict()`
   - `eta` is the seconds from now to 100% (`eta_seconds − age of the last fetch`)
 - `timeline{points[[x,pct]], last_x, now_x, now_pct, proj[x,pct]|null, hit, start_label, end_label, level}`. x runs from 0 to 1 across the 5 hours. The actual data ends at `last_x`, which is the last fetch.
-- `stats{today, msgs, week, burn, active, heat[7][24], day_labels}`
+- `stats{today, msgs, week, burn, active, heat[7][24], day_labels, weeks[]}`: `weeks[i].total` is formatted ("6.6M") and `weeks[i].empty` marks a week with no events.
+- `rows[i].prev_peak`: last weekly window's peak (`display_pct` rounding), `seven_day` only, from `History.prev_window_peak()` (cached per window and sample count, since the model is rebuilt every second).
 - `updated`, `interval`, `view`
 - `settings`: the config plus `autostart`
 - `eta`
@@ -531,7 +538,8 @@ What's left: about 72 MB is Python plus .NET/WinForms, about 37 MB the WebView2 
 
 ## 13. Testing
 
-- **Unit tests**: run `.venv\Scripts\python.exe -m unittest discover -s tests -v`. **33 tests**, about 0.03 s.
+- **Unit tests**: run `.venv\Scripts\python.exe -m unittest discover -s tests -v`. **42 tests**, about 0.05 s.
+  - `tests/test_history_views.py` (9) covers heatmap week bucketing and paging data (boundaries, 4-week cut-off, the 7-day tile unchanged, formatted totals) and last week's peak (only the previous window, reset jitter, cache refresh, never a fake 100, hidden while pending).
   - `tests/test_refinement.py` (19) covers:
     - display rounding and coarse ETAs
     - the freshness states, including expired and rate-limited
@@ -587,7 +595,7 @@ What's left: about 72 MB is Python plus .NET/WinForms, about 37 MB the WebView2 
 
 ## 15. Ideas / backlog
 - Settings toggle and third ring for **per-model limits** (Sonnet); the data path already exists (`show_model_limits`).
-- **Weekly history chart**: the weekly % over past weeks. `history.jsonl` already has the data.
+- **Weekly history chart**: the weekly % over past weeks. `history.jsonl` already has the data. (Only last week's peak is shown today, as one line on the weekly row.)
 - Global **hotkey** (for example Win+Shift+C) to open the card.
 - Verify and fix multi-monitor, other taskbar edges, auto-hide taskbar, and other DPI scales.
 - Optional **PyInstaller** one-folder build plus an Inno Setup installer, for a Python-free install.
@@ -677,3 +685,9 @@ The goal was an audit-first pass with minimal changes; no new features or sectio
   - the ring pill uses short labels so it doesn't wrap
 - **Unchanged:** the authentication and refresh flow, curl, `reset_key()`, backoff, sleep/wake handling, the watchdog, threshold defaults (75/90), the visual identity and the pill sizes.
 - **Added:** `tests/test_refinement.py` (19 tests) and the demo-only `CUW_DEMO_OFFLINE` switch. Two bugs in the new code were caught by those tests before shipping: the eager-forecast crash and "~60 min".
+
+### Past activity views (2026-11-26)
+Added at the user's request after weighing them against the glance-and-go principle; both reuse existing UI rather than adding sections.
+- **Heatmap week paging**: ‹ › on the existing heatmap pages back through 4 weeks of Claude Code activity with a per-week token total. `LogScanner.KEEP_DAYS` went from 8 to 29 days.
+- **Last week's peak**: one muted line on the weekly row, from `history.jsonl` (`History.prev_window_peak`). The demo seeds a previous weekly window peaking at 81.6%.
+- Added `tests/test_history_views.py` (9 tests, 42 total).

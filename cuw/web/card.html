@@ -25,6 +25,7 @@
   .rbox .v small { font-size: 15px; font-weight: 600; opacity: .8; }
   .rt { margin-top: 8px; font-weight: 650; font-size: 14px; }
   .rs { font-size: 11.5px; color: var(--sub); margin-top: 2px; }
+  .pv { font-size: 11px; color: var(--faint); margin-top: 1px; min-height: 13px; }
 
   /* bars */
   .brow { display: grid; grid-template-columns: 26px 1fr auto; column-gap: 8px; align-items: start; margin-bottom: 14px; }
@@ -61,10 +62,18 @@
   .stat .v { font-size: 17px; font-weight: 700; }
   .stat .k { font-size: 11px; color: var(--sub); margin-top: 1px; white-space: nowrap; }
   .stat .k2 { font-size: 11px; color: var(--faint); white-space: nowrap; min-height: 14px; }
-  .hm { display: grid; grid-template-columns: 26px repeat(24, 1fr); gap: 2px; margin-top: 10px; align-items: center; }
+  .hm { display: grid; grid-template-columns: 26px repeat(24, 1fr); gap: 2px; margin-top: 6px; align-items: center; }
   .hm .d { font-size: 10px; color: var(--faint); }
   .hm .c { aspect-ratio: 1; border-radius: 3px; background: var(--track); transition: transform .12s; }
   .hm .c:hover { transform: scale(1.5); outline: 1px solid var(--fg); }
+  .hmh { display: flex; align-items: center; gap: 4px; margin-top: 12px; font-size: 11px; color: var(--sub); }
+  .hmh #hmLbl { font-weight: 600; color: var(--fg); }
+  .hmh #hmTot { color: var(--faint); margin-left: 4px; }
+  .hmh .sp { flex: 1; }
+  .hmh button { width: 22px; height: 20px; border: 0; border-radius: 6px; background: var(--chip); color: var(--sub);
+                font: inherit; font-size: 13px; line-height: 1; cursor: pointer; padding: 0; }
+  .hmh button:hover:not(:disabled) { color: var(--fg); }
+  .hmh button:disabled { opacity: .3; cursor: default; }
   .hmx { display: grid; grid-template-columns: 26px repeat(4, 1fr); font-size: 10px; color: var(--faint); margin-top: 4px; }
   #tip { position: fixed; pointer-events: none; padding: 5px 8px; border-radius: 7px; font-size: 11.5px;
          background: rgba(10,10,14,.9); color: #fff; opacity: 0; transition: opacity .1s; white-space: nowrap; z-index: 9; }
@@ -123,6 +132,8 @@
     <div class="divider"></div>
     <section><span class="lbl">Claude Code activity</span>
       <div class="stats" id="stats"></div>
+      <div class="hmh"><span id="hmLbl"></span><span id="hmTot"></span><span class="sp"></span>
+        <button id="hmPrev" title="Earlier week">&#8249;</button><button id="hmNext" title="Later week">&#8250;</button></div>
       <div class="hm" id="hm"></div>
       <div class="hmx"><span></span><span>12a</span><span>6a</span><span>12p</span><span>6p</span></div>
     </section>
@@ -151,7 +162,8 @@
 <script>
 const $ = id => document.getElementById(id);
 const api = () => window.pywebview && window.pywebview.api;
-let M = null, built = '', isOpen = false;
+let M = null, built = '', isOpen = false, hmWeek = 0;
+const PEAK_TIP = "Highest weekly % the widget recorded in your previous weekly window (it only records while it is running).";
 
 const ICONS = {
   rings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8" stroke-linecap="round"/></svg>',
@@ -163,7 +175,7 @@ const ICONS = {
 const igrad = id => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--c1)"/><stop offset="1" stop-color="var(--c2)"/></linearGradient></defs>`;
 
 function setBackdrop(url){ const b=$('bd'); b.style.backgroundImage=`url(${url})`; b.classList.add('on'); }
-function opened(){ isOpen = true; document.body.classList.remove('closed'); animateIn(); }
+function opened(){ isOpen = true; if (hmWeek) { hmWeek = 0; if (M) renderStats(M); } document.body.classList.remove('closed'); animateIn(); }
 function closed(){ isOpen = false; document.body.classList.add('closed'); document.body.classList.remove('set'); }
 
 function countTo(el, to, ms=900){
@@ -222,7 +234,7 @@ function renderLimits(m){
           <circle class="arc" cx="60" cy="60" r="51" fill="none" stroke="url(#rg${i})" stroke-width="11" stroke-linecap="round"
             stroke-dasharray="320.44" stroke-dashoffset="320.44" data-c="320.44" transform="rotate(-90 60 60)"/></svg>
         <div class="v num"><span><span data-count="0"></span><small>%</small></span></div></div>
-        <div class="rt">${r.title}</div><div class="rs"></div></div>`).join('')}</div>`;
+        <div class="rt">${r.title}</div><div class="rs"></div><div class="pv"></div></div>`).join('')}</div>`;
     }
     if (isOpen) requestAnimationFrame(animateIn);
   }
@@ -241,9 +253,15 @@ function renderLimits(m){
     if (m.view === 'bars') {
       el.querySelector('.ic').innerHTML = (ICONS[r.key] || ICONS.other).replace('>', '>' + igrad('ig'+i)).replace(/url\(#ig\)/g, `url(#ig${i})`);
       el.querySelector('.r').textContent = r.reset_card;
+      const sub = el.querySelector('.s');
+      sub.textContent = r.prev_peak != null ? `${r.sub} · last week ${r.prev_peak}%` : r.sub;
+      sub.title = r.prev_peak != null ? PEAK_TIP : '';
       const b = el.querySelector('.bar > i'); b.dataset.w = Math.max(2, Math.min(r.pct,100)) + '%'; b.style.width = b.dataset.w;
     } else {
       el.querySelector('.rs').textContent = r.reset_card;
+      const pv = el.querySelector('.pv');
+      pv.textContent = r.prev_peak != null ? `Last week peaked at ${r.prev_peak}%` : '';
+      pv.title = r.prev_peak != null ? PEAK_TIP : '';
       const a = el.querySelector('.arc'); a.dataset.off = 320.44 * (1 - Math.min(r.pct,100)/100); a.style.strokeDashoffset = a.dataset.off;
       el.querySelector('.rbox').classList.toggle('pulse', r.pct >= 90);
     }
@@ -300,16 +318,27 @@ function renderStats(m){
   $('stats').title = 'Claude Code only, from local logs: input + output + cache-write tokens (cache reads excluded). '
     + 'Responses = model responses, including tool steps. Tokens/min = average over the last 10 minutes. '
     + 'claude.ai chats are not included here, but do count toward your plan limits above.';
-  const max = Math.max(1, ...s.heat.flat());
+  const weeks = (s.weeks && s.weeks.length) ? s.weeks : [{heat: s.heat, day_labels: s.day_labels,
+                 day_dates: s.day_labels, label: 'Last 7 days', total: s.week, empty: false}];
+  hmWeek = Math.min(hmWeek, weeks.length - 1);
+  const wk = weeks[hmWeek];
+  // one colour scale across all weeks, so weeks can be compared by eye
+  const max = Math.max(1, ...weeks.flatMap(w => w.heat.flat()));
+  $('hmLbl').textContent = wk.label;
+  $('hmTot').textContent = wk.empty ? 'no activity logged' : `${wk.total} tokens`;
+  // Can't page past the oldest week that has data (Claude Code deletes old transcripts).
+  const oldest = weeks.reduce((o, w, i) => w.empty ? o : i, 0);
+  $('hmPrev').disabled = hmWeek >= oldest;
+  $('hmNext').disabled = hmWeek === 0;
   const hm = $('hm');
   if (!hm.children.length) {
     let h = '';
     for (let d=0; d<7; d++){ h += `<span class="d">${s.day_labels[d].slice(0,2)}</span>`; for (let i=0;i<24;i++) h += `<div class="c" data-d="${d}" data-h="${i}"></div>`; }
     hm.innerHTML = h;
   }
-  hm.querySelectorAll('.d').forEach((e,d)=> e.textContent = s.day_labels[d].slice(0,2));
+  hm.querySelectorAll('.d').forEach((e,d)=> e.textContent = wk.day_labels[d].slice(0,2));
   hm.querySelectorAll('.c').forEach(c => {
-    const v = s.heat[c.dataset.d][c.dataset.h], k = v ? Math.pow(v/max, .55) : 0;
+    const v = wk.heat[c.dataset.d][c.dataset.h], k = v ? Math.pow(v/max, .55) : 0;
     c.style.background = v ? `color-mix(in srgb, var(--ok1) ${Math.round(18 + k*82)}%, transparent)` : '';
     c.style.boxShadow = k > .7 ? '0 0 6px var(--okg)' : '';
     c.dataset.v = v;
@@ -320,12 +349,15 @@ const tip = $('tip');
 $('hm').addEventListener('mousemove', e => {
   const c = e.target.closest('.c'); if (!c || !M || !M.stats) { tip.style.opacity = 0; return; }
   const h = +c.dataset.h, hh = (h % 12 || 12) + (h < 12 ? ' AM' : ' PM');
-  tip.textContent = `${M.stats.day_labels[c.dataset.d]} ${hh} · ${fmtTok(+c.dataset.v)} tokens`;
+  const wk = (M.stats.weeks && M.stats.weeks[hmWeek]) || {day_dates: M.stats.day_labels};
+  tip.textContent = `${wk.day_dates[c.dataset.d]} ${hh} · ${fmtTok(+c.dataset.v)} tokens`;
   tip.style.opacity = 1;
   const x = Math.min(e.clientX + 10, document.body.clientWidth - tip.offsetWidth - 6);
   tip.style.left = x + 'px'; tip.style.top = (e.clientY - 30) + 'px';
 });
 $('hm').addEventListener('mouseleave', () => tip.style.opacity = 0);
+$('hmPrev').onclick = () => { hmWeek++; if (M) renderStats(M); };
+$('hmNext').onclick = () => { hmWeek = Math.max(0, hmWeek - 1); if (M) renderStats(M); };
 
 function renderSettings(s){
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.v === s.pill_style));
