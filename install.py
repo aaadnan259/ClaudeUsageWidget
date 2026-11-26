@@ -120,7 +120,8 @@ def main():
         return
     if not os.path.exists(PYTHONW):
         sys.exit("Missing .venv - run Install.bat instead.")
-    make_icon(ICON)
+    if not os.path.exists(ICON):  # the designed icon (assets/make_icon.py) is kept; this is only a fallback
+        make_icon(ICON)
     print("icon:", ICON)
     for p in lnks:
         create_lnk(p)

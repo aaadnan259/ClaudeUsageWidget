@@ -108,6 +108,7 @@ claude_usage_widget.pyw   Python version entry point
 cuw/                      Python version (pywebview + HTML/CSS)
 tests/                    Python unit tests
 assets/app.ico            app icon (also compiled into the .exe)
+assets/make_icon.py       draws app.ico at every size (run it after changing the design)
 docs/ARCHITECTURE.md      full architecture + project context
 CLAUDE.md                 short notes for coding agents
 ```
