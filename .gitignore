@@ -8,3 +8,6 @@ dist/
 .vscode/
 .idea/
 Thumbs.db
+
+# Rust build output
+rust/target/

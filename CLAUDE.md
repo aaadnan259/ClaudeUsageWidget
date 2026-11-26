@@ -28,7 +28,8 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
 - `cuw/data.py`: Anthropic usage fetch (curl), token refresh, `History` + forecast, `LogScanner`.
 - `cuw/winutil.py`: Win32 via ctypes. Placement, glass capture (GDI), autostart, `NativeHost` (taskbar button, progress, menus).
 - `cuw/web/`: `pill.html`, `card.html`, `glass.css` (no framework, no build step).
-- `install.py` / `Install.bat`: app install. `tests/test_core.py`: unit tests.
+- `install.py` / `Install.bat`: app install. `tests/`: unit tests.
+- `rust/`: native Rust port in progress (branch `rust-port`). Read `rust/PLAN.md` first; the Python app is still the daily driver.
 
 ## Rules that bite (details in docs §12)
 - Test with `--demo`. Restarting against the real API polls immediately and triggers HTTP 429s.

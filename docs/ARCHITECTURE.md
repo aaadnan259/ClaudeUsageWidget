@@ -691,3 +691,9 @@ Added at the user's request after weighing them against the glance-and-go princi
 - **Heatmap week paging**: ‹ › on the existing heatmap pages back through 4 weeks of Claude Code activity with a per-week token total. `LogScanner.KEEP_DAYS` went from 8 to 29 days.
 - **Last week's peak**: one muted line on the weekly row, from `history.jsonl` (`History.prev_window_peak`). The demo seeds a previous weekly window peaking at 81.6%.
 - Added `tests/test_history_views.py` (9 tests, 42 total).
+
+### Native Rust port, phase 1 (2026-11-26, branch `rust-port`)
+The user chose a fully native rewrite: Direct2D + DirectComposition, real Windows 11 acrylic, in `rust/`, delivered in phases. The plan, measurements and lessons are in `rust/PLAN.md`.
+- **Phase 1 delivers:** data, model, pill, tray and menus. It uses the same data files, the same single-instance mutex and the same host window class as the Python app, so the two never run together and switching keeps history, alert de-duplication and position.
+- **Measured:** 12.2 MB private, 0.1% of one core idle, a 515 KB `.exe`, against about 205 MB for the Python app. Rendering uses the WARP software rasterizer, because a hardware D3D device alone costs about 63 MB.
+- The Python app stays the daily driver until the card (phase 2) and the rest (phase 3) reach parity.
