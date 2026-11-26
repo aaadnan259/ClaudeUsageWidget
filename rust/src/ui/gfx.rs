@@ -89,6 +89,23 @@ impl Gfx {
         }
     }
 
+    /// A flat-capped dashed stroke. `dashes` are in DIPs for the given line width
+    /// (like SVG stroke-dasharray); Direct2D wants them in multiples of the width.
+    pub fn dashed(&self, dashes: &[f32], width: f32) -> Option<ID2D1StrokeStyle> {
+        let rel: Vec<f32> = dashes.iter().map(|d| d / width.max(0.1)).collect();
+        unsafe {
+            ID2D1Factory::CreateStrokeStyle(
+                &self.d2d_factory,
+                &D2D1_STROKE_STYLE_PROPERTIES {
+                    startCap: D2D1_CAP_STYLE_FLAT, endCap: D2D1_CAP_STYLE_FLAT, dashCap: D2D1_CAP_STYLE_FLAT,
+                    lineJoin: D2D1_LINE_JOIN_ROUND, miterLimit: 10.0, dashStyle: D2D1_DASH_STYLE_CUSTOM, dashOffset: 0.0,
+                },
+                Some(&rel),
+            )
+            .ok()
+        }
+    }
+
     fn format(&self, size: f32, weight: u32) -> Result<IDWriteTextFormat> {
         let key = (size.to_bits(), weight);
         if let Some(f) = self.formats.borrow().get(&key) {
@@ -116,6 +133,20 @@ impl Gfx {
         }
     }
 
+    /// Height of word-wrapped text (same settings as Canvas::text_wrapped).
+    pub fn wrapped_height(&self, text: &str, size: f32, weight: u32, w: f32, line: f32) -> f32 {
+        self.layout(text, size, weight)
+            .and_then(|l| unsafe {
+                l.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+                l.SetMaxWidth(w.max(1.0))?;
+                l.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, line, line * 0.8)?;
+                let mut m = DWRITE_TEXT_METRICS::default();
+                l.GetMetrics(&mut m)?;
+                Ok(m.height)
+            })
+            .unwrap_or(line)
+    }
+
     pub fn text_width(&self, text: &str, size: f32, weight: u32) -> f32 {
         self.layout(text, size, weight)
             .and_then(|l| unsafe {
@@ -132,29 +163,52 @@ pub struct Surface {
     pub dc: ID2D1DeviceContext,
     swap: IDXGISwapChain1,
     _target: IDCompositionTarget,
-    _visual: IDCompositionVisual,
+    pub visual: IDCompositionVisual,
     pub w: u32,
     pub h: u32,
     pub scale: f32,
 }
 
+fn composition_swap(g: &Gfx, w: u32, h: u32) -> Result<IDXGISwapChain1> {
+    let desc = DXGI_SWAP_CHAIN_DESC1 {
+        Width: w.max(1), Height: h.max(1), Format: DXGI_FORMAT_B8G8R8A8_UNORM, Stereo: false.into(),
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        BufferCount: 2, Scaling: DXGI_SCALING_STRETCH, SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED, Flags: 0,
+    };
+    unsafe { g.dxgi_factory.CreateSwapChainForComposition(&g.d3d, &desc, None) }
+}
+
+/// Point a device context at a swap chain's back buffer, at the given scale.
+fn bind_target(dc: &ID2D1DeviceContext, swap: &IDXGISwapChain1, scale: f32) -> Result<()> {
+    unsafe {
+        let surface: IDXGISurface = swap.GetBuffer(0)?;
+        let dpi = 96.0 * scale;
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: dpi, dpiY: dpi,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let bmp = dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+        dc.SetTarget(&bmp);
+        dc.SetDpi(dpi, dpi);
+        dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    }
+    Ok(())
+}
+
 impl Surface {
     pub fn new(g: &Gfx, hwnd: HWND, w: u32, h: u32, scale: f32) -> Result<Surface> {
         unsafe {
-            let desc = DXGI_SWAP_CHAIN_DESC1 {
-                Width: w.max(1), Height: h.max(1), Format: DXGI_FORMAT_B8G8R8A8_UNORM, Stereo: false.into(),
-                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2, Scaling: DXGI_SCALING_STRETCH, SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED, Flags: 0,
-            };
-            let swap = g.dxgi_factory.CreateSwapChainForComposition(&g.d3d, &desc, None)?;
+            let swap = composition_swap(g, w, h)?;
             let dc = g.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
             let target = g.dcomp.CreateTargetForHwnd(hwnd, true)?;
             let visual = g.dcomp.CreateVisual()?;
             visual.SetContent(&swap)?;
             target.SetRoot(&visual)?;
             g.dcomp.Commit()?;
-            let mut s = Surface { dc, swap, _target: target, _visual: visual, w: 0, h: 0, scale };
+            let mut s = Surface { dc, swap, _target: target, visual, w: 0, h: 0, scale };
             s.bind(w.max(1), h.max(1), scale)?;
             Ok(s)
         }
@@ -166,19 +220,8 @@ impl Surface {
             if self.w != 0 {
                 self.swap.ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
             }
-            let surface: IDXGISurface = self.swap.GetBuffer(0)?;
-            let dpi = 96.0 * scale;
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-                dpiX: dpi, dpiY: dpi,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                colorContext: std::mem::ManuallyDrop::new(None),
-            };
-            let bmp = self.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
-            self.dc.SetTarget(&bmp);
-            self.dc.SetDpi(dpi, dpi);
-            self.dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         }
+        bind_target(&self.dc, &self.swap, scale)?;
         self.w = w;
         self.h = h;
         self.scale = scale;
@@ -204,6 +247,122 @@ impl Surface {
         unsafe {
             self.dc.EndDraw(None, None)?;
             self.swap.Present(1, DXGI_PRESENT(0)).ok()
+        }
+    }
+}
+
+/// A small marker (a dot) with a pulsing halo, as two child layers over a surface.
+/// The pulse — the halo growing from r 4 to 12 while fading from 70% to 0 every 1.8 s,
+/// ease-out — is a DirectComposition animation that Windows runs itself, so it costs
+/// this process nothing per frame.
+pub struct Halo {
+    halo: IDCompositionVisual,
+    dot: IDCompositionVisual,
+    halo_swap: IDXGISwapChain1,
+    dot_swap: IDXGISwapChain1,
+    dc: ID2D1DeviceContext,
+    scale_t: IDCompositionScaleTransform,
+    effect: IDCompositionEffectGroup,
+    key: String,
+    pulsing: Option<bool>,
+}
+
+const HALO_R: f32 = 12.0; // largest halo radius (DIP)
+const DOT_BOX: f32 = 12.0; // dot layer size (DIP)
+
+impl Halo {
+    pub fn new(g: &Gfx, parent: &IDCompositionVisual) -> Result<Halo> {
+        unsafe {
+            let halo_swap = composition_swap(g, 64, 64)?;
+            let dot_swap = composition_swap(g, 32, 32)?;
+            let halo = g.dcomp.CreateVisual()?;
+            let dot = g.dcomp.CreateVisual()?;
+            halo.SetContent(&halo_swap)?;
+            dot.SetContent(&dot_swap)?;
+            parent.AddVisual(&halo, true, None)?;
+            parent.AddVisual(&dot, true, None)?;
+            let scale_t = g.dcomp.CreateScaleTransform()?;
+            halo.SetTransform(&scale_t)?;
+            let effect = g.dcomp.CreateEffectGroup()?;
+            halo.SetEffect(&effect)?;
+            let dc = g.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+            Ok(Halo { halo, dot, halo_swap, dot_swap, dc, scale_t, effect, key: String::new(), pulsing: None })
+        }
+    }
+
+    fn paint(&self, g: &Gfx, swap: &IDXGISwapChain1, px: u32, scale: f32, f: impl FnOnce(&Canvas)) -> Result<()> {
+        unsafe {
+            self.dc.SetTarget(None);
+            swap.ResizeBuffers(0, px.max(1), px.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            bind_target(&self.dc, swap, scale)?;
+            self.dc.BeginDraw();
+            self.dc.Clear(Some(&D2D1_COLOR_F::default()));
+            f(&Canvas { g, dc: &self.dc, alpha: 1.0 });
+            self.dc.EndDraw(None, None)?;
+            self.dc.SetTarget(None);
+            swap.Present(0, DXGI_PRESENT(0)).ok()
+        }
+    }
+
+    /// Show the marker at (x, y) DIP. `halo` = the pulsing ring colour (None: no pulse).
+    pub fn show(&mut self, g: &Gfx, x: f32, y: f32, scale: f32, ring: Rgba, fill: Rgba, halo: Option<Rgba>) -> Result<()> {
+        let key = format!("{scale}|{ring:?}|{fill:?}|{halo:?}");
+        let hp = (2.0 * HALO_R * scale).ceil() as u32 + 2;
+        let dp = (DOT_BOX * scale).ceil() as u32 + 2;
+        if key != self.key {
+            self.key = key;
+            let c = halo.unwrap_or(fill);
+            self.paint(g, &self.halo_swap, hp, scale, |cv| {
+                let r = hp as f32 / scale / 2.0;
+                cv.fill_circle(r, r, HALO_R, c);
+            })?;
+            self.paint(g, &self.dot_swap, dp, scale, |cv| {
+                let r = dp as f32 / scale / 2.0;
+                cv.fill_circle(r, r, 4.75, ring);
+                cv.fill_circle(r, r, 4.0, fill);
+            })?;
+        }
+        unsafe {
+            let (hx, hy) = ((x * scale - hp as f32 / 2.0).round(), (y * scale - hp as f32 / 2.0).round());
+            self.halo.SetOffsetX2(hx)?;
+            self.halo.SetOffsetY2(hy)?;
+            self.scale_t.SetCenterX2(hp as f32 / 2.0)?;
+            self.scale_t.SetCenterY2(hp as f32 / 2.0)?;
+            self.dot.SetOffsetX2((x * scale - dp as f32 / 2.0).round())?;
+            self.dot.SetOffsetY2((y * scale - dp as f32 / 2.0).round())?;
+            let want = halo.is_some();
+            if self.pulsing != Some(want) {
+                self.pulsing = Some(want);
+                if want {
+                    // k = t/1.8, e = 1-(1-k)^2 = 2k - k^2
+                    // radius 4 + 8e  -> scale (4 + 8e)/12 = 1/3 + (16/12)k - (8/12)k^2
+                    // opacity 0.7(1-e) = 0.7 - 1.4k + 0.7k^2
+                    let d = 1.8f32;
+                    let sc = g.dcomp.CreateAnimation()?;
+                    sc.AddCubic(0.0, 1.0 / 3.0, 16.0 / 12.0 / d, -(8.0 / 12.0) / (d * d), 0.0)?;
+                    sc.AddRepeat(d as f64, d as f64)?;
+                    let op = g.dcomp.CreateAnimation()?;
+                    op.AddCubic(0.0, 0.7, -1.4 / d, 0.7 / (d * d), 0.0)?;
+                    op.AddRepeat(d as f64, d as f64)?;
+                    self.scale_t.SetScaleX(&sc)?;
+                    self.scale_t.SetScaleY(&sc)?;
+                    self.effect.SetOpacity(&op)?;
+                } else {
+                    self.effect.SetOpacity2(0.0)?;
+                }
+            }
+            self.dot.SetEffect(None)?;
+            g.dcomp.Commit()?;
+        }
+        Ok(())
+    }
+
+    /// Hide both layers (e.g. no timeline).
+    pub fn hide(&mut self, g: &Gfx) -> Result<()> {
+        unsafe {
+            self.halo.SetOffsetX2(-10000.0)?;
+            self.dot.SetOffsetX2(-10000.0)?;
+            g.dcomp.Commit()
         }
     }
 }
@@ -308,10 +467,70 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    pub fn line_styled(&self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, b: &ID2D1Brush, style: Option<&ID2D1StrokeStyle>) {
+        unsafe { self.dc.DrawLine(pt(x0, y0), pt(x1, y1), b, width, style) }
+    }
+
+    fn path(&self, pts: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry1> {
+        if pts.len() < 2 {
+            return None;
+        }
+        unsafe {
+            let path = self.g.d2d_factory.CreatePathGeometry().ok()?;
+            let sink = path.Open().ok()?;
+            sink.BeginFigure(pt(pts[0].0, pts[0].1), if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+            for p in &pts[1..] {
+                sink.AddLine(pt(p.0, p.1));
+            }
+            sink.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+            sink.Close().ok()?;
+            Some(path)
+        }
+    }
+
+    /// Polyline with round joins and caps.
+    pub fn polyline(&self, pts: &[(f32, f32)], width: f32, b: &ID2D1Brush) {
+        if let Some(p) = self.path(pts, false) {
+            unsafe { self.dc.DrawGeometry(&p, b, width, &self.g.round_stroke) }
+        }
+    }
+
+    pub fn fill_polygon(&self, pts: &[(f32, f32)], b: &ID2D1Brush) {
+        if let Some(p) = self.path(pts, true) {
+            unsafe { self.dc.FillGeometry(&p, b, None) }
+        }
+    }
+
+    pub fn stroke_circle_brush(&self, cx: f32, cy: f32, r: f32, width: f32, b: &ID2D1Brush) {
+        let e = D2D1_ELLIPSE { point: pt(cx, cy), radiusX: r, radiusY: r };
+        unsafe { self.dc.DrawEllipse(&e, b, width, None) }
+    }
+
+    /// Word-wrapped text from (x, y) within width w; returns the height used.
+    pub fn text_wrapped(&self, s: &str, size: f32, weight: u32, x: f32, y: f32, w: f32, line: f32, brush: &ID2D1Brush) -> f32 {
+        let Ok(l) = self.g.layout(s, size, weight) else { return 0.0 };
+        unsafe {
+            let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            let _ = l.SetMaxWidth(w.max(1.0));
+            let _ = l.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, line, line * 0.8);
+            self.dc.DrawTextLayout(pt(x, y), &l, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            let mut m = DWRITE_TEXT_METRICS::default();
+            let _ = l.GetMetrics(&mut m);
+            m.height
+        }
+    }
+
     /// Text in a box: horizontal alignment within [x, x+w], vertically centred in [y, y+h].
     /// `runs` lets parts of the string use another colour/weight: (start, len, colour, weight).
     pub fn text(&self, s: &str, size: f32, weight: u32, x: f32, y: f32, w: f32, h: f32, align: Align,
                 brush: &ID2D1Brush, runs: &[(u32, u32, Rgba, u32)]) -> f32 {
+        let sized: Vec<(u32, u32, Rgba, u32, f32)> = runs.iter().map(|r| (r.0, r.1, r.2, r.3, 0.0)).collect();
+        self.text_sized(s, size, weight, x, y, w, h, align, brush, &sized)
+    }
+
+    /// Like `text`, but runs can also change the font size (0 = unchanged).
+    pub fn text_sized(&self, s: &str, size: f32, weight: u32, x: f32, y: f32, w: f32, h: f32, align: Align,
+                      brush: &ID2D1Brush, runs: &[(u32, u32, Rgba, u32, f32)]) -> f32 {
         let Ok(l) = self.g.layout(s, size, weight) else { return 0.0 };
         unsafe {
             let _ = l.SetMaxWidth(w.max(1.0));
@@ -322,12 +541,15 @@ impl<'a> Canvas<'a> {
                 Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
             });
             let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            for (start, len, c, wt) in runs {
+            for (start, len, c, wt, sz) in runs {
                 let range = DWRITE_TEXT_RANGE { startPosition: *start, length: *len };
                 if let Some(b) = self.solid(*c) {
                     let _ = l.SetDrawingEffect(&b, range);
                 }
                 let _ = l.SetFontWeight(DWRITE_FONT_WEIGHT(*wt as i32), range);
+                if *sz > 0.0 {
+                    let _ = l.SetFontSize(*sz, range);
+                }
             }
             self.dc.DrawTextLayout(pt(x, y), &l, brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
             let mut m = DWRITE_TEXT_METRICS::default();

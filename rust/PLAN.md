@@ -18,6 +18,30 @@ Learned in phase 1:
 - **Win32 menus follow the dark theme** via uxtheme `SetPreferredAppMode(AllowDark)` (ordinal 135).
 - **Drag uses the cursor position at button-up**, because move messages coalesce on fast drags.
 
+**Phase 2 is done (2026-11-26).** The details card:
+- the header (plan chip, view toggle)
+- bars and rings views, with the sweep, fill and count-up animations on open
+- last week's peak
+- the forecast line with its level dot
+- the 5-hour timeline: actual line drawing in, area fill, dashed projection with the hit marker, now tick, axis labels, Actual/Projected legend, pulsing halo on the last-fetch point
+- the stale state: dimmed limits, paused forecast, amber footer
+- the footer with the live dot
+
+It opens above the pill (below it if there's no room) and grows with its content. It closes on Esc, on a click outside, on a second pill click, when focus moves away, when you start dragging the pill and in fullscreen. A second launch brings it up. It has been checked in `--demo`, `CUW_DEMO_OFFLINE` and once against the real API. 21 tests pass.
+
+| Measured (release) | Card closed | Card open |
+|---|---|---|
+| CPU (one core) | 0.05% | **0.31%** (the Python card used a WebView renderer) |
+| Private memory | 12 MB | 17–21 MB |
+
+Learned in phase 2:
+- **Software rendering makes full redraws expensive:** about 26 ms for the whole card at 175%. The card first cost **51% of a core**, because the halo redrew everything at 60 fps. The fixes:
+  1. The halo and the point are **separate DirectComposition layers**, and the halo's grow-and-fade is a **compositor animation** (`IDCompositionAnimation`) that Windows runs. It costs the app nothing per frame.
+  2. The card redraws only on a **visible** change. The redraw key leaves out `eta`, which ticks every second, and rounds "now" to whole chart pixels.
+  3. Frame-by-frame redraws happen only during the opening sweep and count-up, and for the pulse at 90% or more.
+- **Focus:** the pill must be activatable, not `WS_EX_NOACTIVATE`. Otherwise Windows' foreground lock stops the card taking focus, and Esc and close-on-deactivate break. A 50 ms outside-click watcher is the fallback. A second launch calls `AllowSetForegroundWindow` for the running instance.
+- **Demo switches:** `CUW_DEMO_STILL=1` holds the demo values steady, for measuring idle cost; the plain demo changes every second. `CUW_GPU=hw` compares against hardware rendering.
+
 Run it (the Python widget must be closed first, since they share a lock):
 ```
 cd rust
@@ -25,7 +49,16 @@ cargo build --release
 target\release\ClaudeUsageWidget.exe --demo
 cargo test
 ```
-In phase 1, clicking the pill does nothing; the card arrives in phase 2. Phase 1 doesn't touch autostart.
+Not done yet; this is phase 3:
+- the Claude Code activity section and heatmap
+- the settings panel (the gear)
+- alerts
+- the taskbar button
+- autostart and the installer
+
+Autostart is never touched before phase 3.
+
+**Testing note:** back up `%APPDATA%\ClaudeUsageWidget\config.json` and `state.json` with `Copy-Item`, never PowerShell `Set-Content -Encoding utf8`. That writes a BOM, and the Python app then resets the settings to defaults. It happened once during phase 2 testing and was fixed by hand.
 
 ## Decisions (2026-11-26)
 | Topic | Choice | Why |

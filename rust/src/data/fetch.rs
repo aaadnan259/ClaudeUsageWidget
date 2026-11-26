@@ -209,7 +209,8 @@ impl LimitsFetcher {
 
     fn demo_windows(&self) -> BTreeMap<String, Window> {
         let base = self.t0;
-        let el = now() - self.t0;
+        // CUW_DEMO_STILL=1 holds the values steady (for measuring idle cost with the card open).
+        let el = if std::env::var_os("CUW_DEMO_STILL").is_some() { 0.0 } else { now() - self.t0 };
         BTreeMap::from([
             ("five_hour".to_string(), Window { title: "Session".into(), sub: "5h sliding window".into(), short: "5h".into(),
                 pct: (52.0 + el / 10.0).min(100.0), resets: Some(from_ts(base + 2.0 * 3600.0 + 50.0 * 60.0)) }),

@@ -1,5 +1,5 @@
-//! The app: a hidden host window (1 s tick, tray, app messages) and the pill window, all
-//! on the UI thread; the limits fetcher runs on its own thread and pokes the host.
+//! The app: a hidden host window (1 s tick, tray, app messages), the pill and the details
+//! card, all on the UI thread; the limits fetcher runs on its own thread and pokes the host.
 
 use crate::config::{Store, data_dir};
 use crate::data::fetch::LimitsFetcher;
@@ -8,7 +8,8 @@ use crate::data::{now, now_utc, reset_key};
 use crate::logf;
 use crate::model::{FreshState, Level, Model, build_model};
 use crate::tray::{Tray, WM_TRAY};
-use crate::ui::gfx::{Gfx, Surface};
+use crate::ui::card::{CARD_W, CardView};
+use crate::ui::gfx::{Gfx, Halo, Surface};
 use crate::ui::pill::{PillView, pill_key, size_for};
 use crate::ui::theme::{self, Theme};
 use crate::winutil::{self as W, MenuItem, item};
@@ -17,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -30,6 +32,8 @@ pub const WM_APP_UPDATE: u32 = 0x8001;
 pub const WM_APP_SHOW: u32 = 0x8003;
 const TICK_TIMER: usize = 1;
 const ANIM_TIMER: usize = 2;
+const CARD_ANIM_TIMER: usize = 3;
+const CARD_WATCH_TIMER: usize = 4;
 
 // menu ids
 const M_SHOW: u32 = 1;
@@ -78,6 +82,18 @@ pub struct App {
     reset_refreshed: HashSet<String>,
     anim_on: bool,
     taskbar_created: u32,
+    card: HWND,
+    card_surface: Option<Surface>,
+    card_view: CardView,
+    card_open: bool,
+    card_scale: f32,
+    card_size: (i32, i32),
+    card_closed_at: Instant,
+    card_anim_on: bool,
+    watch_was_down: bool,
+    card_key: String,
+    card_timer_ms: u32,
+    halo: Option<Halo>,
 }
 
 thread_local! {
@@ -113,12 +129,21 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
             hCursor: LoadCursorW(None, IDC_ARROW)?, ..Default::default()
         };
         RegisterClassW(&wc);
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(card_proc), hInstance: hinst.into(), lpszClassName: w!("ClaudeUsageCardClass"),
+            hCursor: LoadCursorW(None, IDC_ARROW)?, ..Default::default()
+        };
+        RegisterClassW(&wc);
         let host = CreateWindowExW(WINDOW_EX_STYLE(0), HOST_CLASS, w!("Claude usage"), WS_OVERLAPPED,
                                    0, 0, 0, 0, None, None, Some(hinst.into()), None)?;
         let pill = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
             w!("ClaudeUsagePillClass"), w!("ClaudeUsagePill"), WS_POPUP,
             0, 0, 100, 40, Some(host), None, Some(hinst.into()), None)?;
+        let card = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+            w!("ClaudeUsageCardClass"), w!("ClaudeUsageCard"), WS_POPUP,
+            0, 0, 360, 400, Some(host), None, Some(hinst.into()), None)?;
         let tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
                                       CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, Some(pill), None, Some(hinst.into()), None)
             .unwrap_or_default();
@@ -131,7 +156,15 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
             drawn_key: String::new(), drag: None, tray: Tray::new(host), last_tick: now(), tick: 0,
             hidden_fs: false, reset_refreshed: HashSet::new(), anim_on: false,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+            card, card_surface: None, card_view: CardView::new(), card_open: false, card_scale: 1.0,
+            card_size: (0, 0), card_closed_at: Instant::now() - Duration::from_secs(5), card_anim_on: false,
+            watch_was_down: true, card_key: String::new(), card_timer_ms: 0, halo: None,
         };
+        app.card_view.view = match store.state.lock().unwrap().get("view").and_then(Value::as_str) {
+            Some("bars") => "bars".into(),
+            _ => "rings".into(),
+        };
+        app.card_view.acrylic = W::style_glass(card, !light);
         app.view.acrylic = W::style_glass(pill, !light);
         if !app.view.acrylic {
             logf!("WARNING acrylic backdrop unavailable; using an opaque fill");
@@ -267,6 +300,10 @@ impl App {
         }
         self.set_tooltip(&PillView::tooltip(&self.model));
         self.update_tray();
+        if self.card_open {
+            self.card_view.sync(&self.model);
+            self.draw_card();
+        }
     }
 
     fn update_tray(&mut self) {
@@ -346,6 +383,7 @@ impl App {
             self.light = light;
             self.theme = if light { theme::light() } else { theme::dark() };
             self.view.acrylic = W::style_glass(self.pill, !light);
+            self.card_view.acrylic = W::style_glass(self.card, !light);
             self.drawn_key.clear();
         }
         self.push(false);
@@ -413,8 +451,9 @@ impl App {
         }
         let (w, h) = self.pill_size();
         let (mon, _, _) = W::monitor_info(self.pos.0 + w / 2, self.pos.1 + h / 2);
-        let fs = W::foreground_is_fullscreen(&[self.pill, self.host], mon);
+        let fs = W::foreground_is_fullscreen(&[self.pill, self.host, self.card], mon);
         if fs && !self.hidden_fs {
+            self.hide_card();
             unsafe {
                 let _ = ShowWindow(self.pill, SW_HIDE);
             }
@@ -432,7 +471,7 @@ impl App {
     fn pill_menu(&self) -> Vec<MenuItem> {
         let style = self.view.style.as_str();
         vec![
-            MenuItem::Item { id: M_SHOW, text: "Show details (coming in phase 2)".into(), checked: false, enabled: false },
+            item(M_SHOW, if self.card_open { "Hide details" } else { "Show details" }, false),
             item(M_REFRESH, "Refresh now", false),
             MenuItem::Sep,
             item(M_BARS, "Pill: bars", style == "bars"),
@@ -458,6 +497,7 @@ impl App {
 
     fn on_menu(&mut self, id: u32) {
         match id {
+            M_SHOW => self.toggle_card(),
             M_REFRESH => self.limits.refresh_now(),
             M_BARS | M_RING | M_TEXT => {
                 let s = match id { M_BARS => "bars", M_RING => "ring", _ => "text" };
@@ -474,8 +514,214 @@ impl App {
         }
     }
 
+    // ---------------------------------------------------------------- card
     fn toggle_card(&mut self) {
-        // The details card arrives in phase 2.
+        if self.card_open {
+            self.hide_card();
+        } else if self.card_closed_at.elapsed() > Duration::from_millis(350) {
+            // A click that just closed the card by deactivating it shouldn't reopen it.
+            self.show_card();
+        }
+    }
+
+    /// Above the pill, right-aligned with it; below it if there's no room above.
+    fn card_rect(&self, scale: f32) -> (i32, i32, i32, i32) {
+        let w = (CARD_W * scale).round() as i32;
+        let h = (self.card_view.height(&self.gfx, &self.model) * scale).ceil() as i32;
+        let gap = (10.0 * scale).round() as i32;
+        let (pw, ph) = self.pill_size();
+        let (px, py) = self.pos;
+        let (_, _, work) = W::monitor_info(px + pw / 2, py + ph / 2);
+        let x = (px + pw - w).clamp(work.l + gap, (work.r - w - gap).max(work.l + gap));
+        let mut y = py - h - gap;
+        if y < work.t + gap {
+            y = (py + ph + gap).min(work.b - h - gap);
+        }
+        (x, y, w, h)
+    }
+
+    fn show_card(&mut self) {
+        if self.card_open || self.hidden_fs {
+            return;
+        }
+        self.card_open = true;
+        self.push(false);
+        self.card_scale = W::dpi_scale(self.pill);
+        let (x, y, w, h) = self.card_rect(self.card_scale);
+        W::place(self.card, x, y, Some((w, h)));
+        let s = W::dpi_scale(self.card);
+        if s != self.card_scale {
+            self.card_scale = s;
+            let (x, y, w, h) = self.card_rect(s);
+            W::place(self.card, x, y, Some((w, h)));
+        }
+        self.card_size = (w, h);
+        self.card_view.replay(&self.model);
+        self.draw_card();
+        unsafe {
+            let _ = ShowWindow(self.card, SW_SHOW);
+            let _ = SetForegroundWindow(self.card);
+            // Fallback for when Windows refuses focus: watch for clicks outside (as the
+            // Python app does), so the card still closes like a flyout.
+            SetTimer(Some(self.card), CARD_WATCH_TIMER, 50, None);
+        }
+        self.watch_was_down = true;
+    }
+
+    fn hide_card(&mut self) {
+        if !self.card_open {
+            return;
+        }
+        self.card_open = false;
+        self.card_closed_at = Instant::now();
+        unsafe {
+            let _ = KillTimer(Some(self.card), CARD_WATCH_TIMER);
+        }
+        unsafe {
+            let _ = ShowWindow(self.card, SW_HIDE);
+        }
+        self.update_card_timer();
+    }
+
+    fn draw_card(&mut self) {
+        if !self.card_open {
+            return;
+        }
+        // grow/shrink with the content
+        let (x, y, w, h) = self.card_rect(self.card_scale);
+        if (w, h) != self.card_size {
+            self.card_size = (w, h);
+            W::place(self.card, x, y, Some((w, h)));
+        }
+        if self.card_surface.is_none() {
+            match Surface::new(&self.gfx, self.card, w as u32, h as u32, self.card_scale) {
+                Ok(s) => self.card_surface = Some(s),
+                Err(e) => {
+                    logf!("ERROR card surface: {e}");
+                    return;
+                }
+            }
+        }
+        let Some(s) = self.card_surface.as_mut() else { return };
+        if s.resize(w as u32, h as u32, self.card_scale).is_err() {
+            self.card_surface = None;
+            return;
+        }
+        // Full redraw only when the content changes; otherwise copy the cache and draw
+        // just the halo (software rendering makes full 60 fps redraws expensive).
+        // Redraw only on visible change: "now" moves 1 chart pixel every ~56 s.
+        let mut km = self.model.clone();
+        if let Some(t) = km.timeline.as_mut() {
+            t.now_x = (t.now_x * 320.0).round() / 320.0;
+        }
+        km.eta = None; // seconds tick every second; the forecast text it feeds is coarse
+        let key = format!("{:?}|{}|{}|{}", km, self.card_view.view, self.card_view.btn_hover, self.light);
+        let full = key != self.card_key || self.card_view.content_animating(&self.model);
+        if full {
+            self.card_key = key;
+            let mut c = s.begin(&self.gfx);
+            self.card_view.draw(&mut c, &self.theme, &self.model);
+            if let Err(e) = s.present() {
+                logf!("WARNING card present: {e}; recreating surface");
+                self.card_surface = None;
+                self.halo = None;
+                self.card_key.clear();
+                return;
+            }
+        }
+        self.update_halo();
+        self.update_card_timer();
+    }
+
+    /// The timeline's last-fetch point and its pulsing halo (a compositor animation).
+    fn update_halo(&mut self) {
+        let Some(s) = self.card_surface.as_ref() else { return };
+        if self.halo.is_none() {
+            match Halo::new(&self.gfx, &s.visual) {
+                Ok(h) => self.halo = Some(h),
+                Err(e) => {
+                    logf!("WARNING halo layer: {e}");
+                    return;
+                }
+            }
+        }
+        let (scale, t) = (self.card_scale, self.theme);
+        let point = self.card_view.point();
+        let Some(h) = self.halo.as_mut() else { return };
+        let r = match point {
+            Some((x, y, fresh, c2)) => h.show(&self.gfx, x, y, scale, t.body, if fresh { c2 } else { t.sub }, fresh.then_some(c2)),
+            None => h.hide(&self.gfx),
+        };
+        if let Err(e) = r {
+            logf!("WARNING halo: {e}");
+        }
+    }
+
+    fn update_card_timer(&mut self) {
+        // 60 fps only while the content animates (open sweep, count-up, 90%+ pulse);
+        // the halo is animated by the compositor.
+        let ms = if self.card_open && self.card_view.animating(&self.model) { 16 } else { 0 };
+        if ms != self.card_timer_ms {
+            unsafe {
+                if ms == 0 {
+                    let _ = KillTimer(Some(self.card), CARD_ANIM_TIMER);
+                } else {
+                    SetTimer(Some(self.card), CARD_ANIM_TIMER, ms, None);
+                }
+            }
+            self.card_timer_ms = ms;
+        }
+        self.card_anim_on = ms != 0;
+    }
+
+    /// A mouse button went down outside the card and the pill: close.
+    fn watch_outside(&mut self) {
+        let down = W::mouse_down(true);
+        if down && !self.watch_was_down {
+            let (x, y) = W::cursor_pos();
+            let inside = [self.card, self.pill].iter().any(|h| {
+                let r = W::window_rect(*h);
+                x >= r.l && x < r.r && y >= r.t && y < r.b
+            });
+            if !inside {
+                self.hide_card();
+            }
+        }
+        self.watch_was_down = down;
+    }
+
+    /// Mouse position in card DIPs.
+    fn card_point(&self, lp: LPARAM) -> (f32, f32) {
+        let x = (lp.0 & 0xFFFF) as i16 as f32;
+        let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f32;
+        (x / self.card_scale, y / self.card_scale)
+    }
+
+    fn on_card_move(&mut self, lp: LPARAM) {
+        let (x, y) = self.card_point(lp);
+        let (bx, by, bw, bh) = self.card_view.view_btn();
+        let over = x >= bx && x < bx + bw && y >= by && y < by + bh;
+        if over != self.card_view.btn_hover {
+            self.card_view.btn_hover = over;
+            let mut tme = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.card, dwHoverTime: 0 };
+            unsafe {
+                let _ = TrackMouseEvent(&mut tme);
+            }
+            self.draw_card();
+        }
+    }
+
+    fn on_card_click(&mut self, lp: LPARAM) {
+        let (x, y) = self.card_point(lp);
+        let (bx, by, bw, bh) = self.card_view.view_btn();
+        if x >= bx && x < bx + bw && y >= by && y < by + bh {
+            let v = if self.card_view.view == "bars" { "rings" } else { "bars" };
+            self.card_view.view = v.into();
+            self.store.state.lock().unwrap().insert("view".into(), json!(v));
+            self.store.save_state();
+            self.card_view.replay(&self.model);
+            self.draw_card();
+        }
     }
 
     fn quit(&mut self) {
@@ -504,12 +750,17 @@ impl App {
         let Some(d) = self.drag.as_mut() else { return };
         let (cx, cy) = W::cursor_pos();
         let (dx, dy) = (cx - d.start_cursor.0, cy - d.start_cursor.1);
+        let mut started = false;
         if !d.moved && dx.abs() + dy.abs() > threshold {
             d.moved = true;
+            started = true;
         }
         if d.moved {
             self.pos = (d.start_pos.0 + dx, d.start_pos.1 + dy);
             W::place(self.pill, self.pos.0, self.pos.1, None);
+        }
+        if started {
+            self.hide_card();
         }
     }
 
@@ -588,7 +839,6 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
 unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_LBUTTONDOWN => {
             with_app(|a| a.on_lbutton_down());
             LRESULT(0)
@@ -625,6 +875,56 @@ unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let _ = EndPaint(hwnd, &ps);
             }
             with_app(|a| a.draw());
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+unsafe extern "system" fn card_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_MOUSEMOVE => {
+            with_app(|a| a.on_card_move(lp));
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            with_app(|a| {
+                if a.card_view.btn_hover {
+                    a.card_view.btn_hover = false;
+                    a.draw_card();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            with_app(|a| a.on_card_click(lp));
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wp.0 == 0x1B => {
+            with_app(|a| a.hide_card());
+            LRESULT(0)
+        }
+        // Clicking anywhere outside (another window, the desktop, the taskbar) closes it.
+        WM_ACTIVATE if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE => {
+            with_app(|a| a.hide_card());
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == CARD_WATCH_TIMER => {
+            with_app(|a| a.watch_outside());
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == CARD_ANIM_TIMER => {
+            with_app(|a| a.draw_card());
+            LRESULT(0)
+        }
+        WM_RBUTTONUP => LRESULT(0),
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            unsafe {
+                BeginPaint(hwnd, &mut ps);
+                let _ = EndPaint(hwnd, &ps);
+            }
+            with_app(|a| a.draw_card());
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },

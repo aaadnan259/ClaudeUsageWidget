@@ -697,3 +697,11 @@ The user chose a fully native rewrite: Direct2D + DirectComposition, real Window
 - **Phase 1 delivers:** data, model, pill, tray and menus. It uses the same data files, the same single-instance mutex and the same host window class as the Python app, so the two never run together and switching keeps history, alert de-duplication and position.
 - **Measured:** 12.2 MB private, 0.1% of one core idle, a 515 KB `.exe`, against about 205 MB for the Python app. Rendering uses the WARP software rasterizer, because a hardware D3D device alone costs about 63 MB.
 - The Python app stays the daily driver until the card (phase 2) and the rest (phase 3) reach parity.
+
+### Native Rust port, phase 2 (2026-11-26, branch `rust-port`)
+- **The details card is ported:** bars and rings views, forecast, timeline, last week's peak, the stale state, and the open/close behaviour.
+- **Cost:** 0.31% of one core with the card open, against 0.05% closed.
+- **How it got there:** the timeline halo is a DirectComposition layer with a compositor-run animation. The card redraws only on visible change; its redraw key leaves out the per-second `eta` and rounds "now" to whole chart pixels.
+- **Focus:** the pill is activatable, so the card can take focus for Esc and close-on-deactivate.
+- **Test switch:** demo-only `CUW_DEMO_STILL=1` (in `rust/`) holds values steady for performance checks.
+- **Details:** `rust/PLAN.md`.
