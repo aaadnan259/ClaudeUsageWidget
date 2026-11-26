@@ -21,6 +21,15 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR, w};
 const NAME: &str = "Claude Usage Widget";
 const ICON: &[u8] = include_bytes!("../../assets/app.ico");
 
+/// "app-<hash>.ico", from the embedded icon's bytes (FNV-1a).
+fn icon_file_name() -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in ICON {
+        h = (h ^ *b as u32).wrapping_mul(0x0100_0193);
+    }
+    format!("app-{h:08x}.ico")
+}
+
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     unsafe {
         let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
@@ -101,7 +110,17 @@ pub fn install() {
         std::fs::create_dir_all(&t.dir).map_err(|e| format!("create {}: {e}", t.dir.display()))?;
         let src = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe = t.dir.join(format!("{APP}.exe"));
-        let icon = t.dir.join("app.ico");
+        // A new file name whenever the icon changes: Explorer caches shortcut icons by
+        // path, so reusing "app.ico" kept showing the old picture after an update.
+        let icon = t.dir.join(icon_file_name());
+        if let Ok(rd) = std::fs::read_dir(&t.dir) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with("app") && n.ends_with(".ico") && e.path() != icon {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
         if !t.test {
             close_running(); // the installed .exe may be the one running
         }

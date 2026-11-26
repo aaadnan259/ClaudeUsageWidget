@@ -92,6 +92,8 @@ target\release\ClaudeUsageWidget.exe --install     (make it the installed app)
 - **A real 429.**
 - **Other monitors, display scalings and taskbar positions.** These need other hardware or a change to the user's display settings.
 
+**Icon updates:** the installer names the icon file after its contents (`app-<hash>.ico`) and deletes older ones. Explorer caches shortcut icons by path, so reusing `app.ico` kept showing the old icon after a redesign.
+
 **Install / switch over** (`--install`):
 1. Copies the `.exe` and icon to `%LOCALAPPDATA%\Programs\ClaudeUsageWidget`.
 2. Creates Start menu and Desktop shortcuts carrying the `ClaudeUsageWidget` AppUserModelID.
