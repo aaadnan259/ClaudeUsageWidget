@@ -28,6 +28,8 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
   - Install / switch back: `Install.bat`
 - **Stop it:** right-click the pill → Quit, or the tray icon → Quit.
 - **Logs:** `%APPDATA%\ClaudeUsageWidget\widget.log`. Rust lines end in `[rust]`.
+- **Network tests:** `python rust\scripts\mock_network_test.py <exe>` (a local mock server). It uses the test-only overrides `CUW_DATA_DIR`, `CUW_CREDS_PATH`, `CUW_USAGE_URL` and `CUW_TOKEN_URL`; `CUW_TEST_CRASH=1` crashes the UI thread 5 s in. Never test sign-in renewal against the real endpoint: refresh tokens rotate and Claude Code could be signed out.
+- **Script messages to the host window (class `ClaudeUsageWidgetHost`):** `0x8003` opens the card, `0x8004` = Refresh now, `WM_CLOSE` quits.
 - **Sending `WM_CLOSE` to the host window from a script:** use Python ctypes, not PowerShell. PowerShell passes `$null` as an empty string, so `FindWindowW(class, "")` misses the window.
 - **Before testing against the real app:** an installed instance holds the single-instance lock, so a `--demo` launch just opens the real card. Quit or stop the installed one first.
 

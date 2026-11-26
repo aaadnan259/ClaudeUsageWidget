@@ -18,13 +18,18 @@ pub struct Sample {
     pub w: BTreeMap<String, (f64, Option<String>)>,
 }
 
+/// (key, window reset_key, sample count) -> peak
+type PeakCache = Option<((String, String, usize), Option<f64>)>;
+/// (key, window reset_key) -> (sample count, points)
+type SeriesCache = std::collections::HashMap<(String, String), (usize, Vec<(f64, f64)>)>;
+
 pub struct History {
     pub demo: bool,
     pub samples: Mutex<Vec<Sample>>,
-    peak_cache: Mutex<Option<((String, String, usize), Option<f64>)>>,
+    peak_cache: Mutex<PeakCache>,
     /// series() results per (key, window, sample count): the model asks twice a second,
     /// and re-parsing every sample's timestamp each time was most of the idle CPU.
-    series_cache: Mutex<std::collections::HashMap<(String, String), (usize, Vec<(f64, f64)>)>>,
+    series_cache: Mutex<SeriesCache>,
 }
 
 fn round_to(v: f64, places: i32) -> f64 {
@@ -45,11 +50,10 @@ impl History {
         let mut out = Vec::new();
         if let Ok(text) = fs::read_to_string(history_path()) {
             for ln in text.lines() {
-                if let Ok(s) = serde_json::from_str::<Sample>(ln) {
-                    if s.t >= cutoff {
+                if let Ok(s) = serde_json::from_str::<Sample>(ln)
+                    && s.t >= cutoff {
                         out.push(s);
                     }
-                }
             }
         }
         let h = History::new(out, false);
@@ -79,20 +83,17 @@ impl History {
         };
         {
             let mut v = self.samples.lock().unwrap();
-            if let Some(last) = v.last() {
-                if last.w == s.w && t - last.t < 300.0 {
+            if let Some(last) = v.last()
+                && last.w == s.w && t - last.t < 300.0 {
                     return; // unchanged; keep the file small
                 }
-            }
             v.push(s.clone());
         }
-        if !self.demo {
-            if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(history_path()) {
-                if let Ok(j) = serde_json::to_string(&s) {
+        if !self.demo
+            && let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(history_path())
+                && let Ok(j) = serde_json::to_string(&s) {
                     let _ = writeln!(f, "{j}");
                 }
-            }
-        }
     }
 
     pub fn last_time(&self) -> Option<f64> {
@@ -123,11 +124,10 @@ impl History {
         let rk = reset_key(resets);
         let v = self.samples.lock().unwrap();
         let ck = (key.to_string(), rk.clone());
-        if let Some((n, pts)) = self.series_cache.lock().unwrap().get(&ck) {
-            if *n == v.len() {
+        if let Some((n, pts)) = self.series_cache.lock().unwrap().get(&ck)
+            && *n == v.len() {
                 return pts.clone();
             }
-        }
         let pts: Vec<(f64, f64)> = v.iter()
             .filter_map(|s| {
                 let (pct, r) = s.w.get(key)?;
@@ -168,11 +168,10 @@ impl History {
         let rk_n: i64 = rk.parse().ok()?;
         let v = self.samples.lock().unwrap();
         let ck = (key.to_string(), rk.clone(), v.len());
-        if let Some((k, val)) = self.peak_cache.lock().unwrap().as_ref() {
-            if *k == ck {
+        if let Some((k, val)) = self.peak_cache.lock().unwrap().as_ref()
+            && *k == ck {
                 return *val;
             }
-        }
         let mut best: BTreeMap<i64, f64> = BTreeMap::new();
         for s in v.iter() {
             let Some((pct, r)) = s.w.get(key) else { continue };

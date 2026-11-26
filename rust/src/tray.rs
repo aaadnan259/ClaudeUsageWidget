@@ -75,13 +75,12 @@ impl Tray {
         let key = format!("{:?}|{color:06x}", pct.map(|p| p.round() as i64));
         if key != self.key {
             self.key = key;
-            if let Ok(icon) = ring_icon(g, pct, color, 32) {
-                if let Some(old) = self.icon.replace(icon) {
+            if let Ok(icon) = ring_icon(g, pct, color, 32)
+                && let Some(old) = self.icon.replace(icon) {
                     unsafe {
                         let _ = DestroyIcon(old);
                     }
                 }
-            }
             self.tip = tip.chars().take(120).collect();
             self.apply();
         } else if tip != self.tip {
@@ -172,7 +171,7 @@ pub fn ring_icon(g: &Gfx, pct: Option<f64>, color: u32, size: u32) -> Result<HIC
         let mut px = vec![0u8; (stride * size) as usize];
         bmp.CopyPixels(std::ptr::null(), stride, &mut px)?;
         // Icons want straight (non-premultiplied) alpha.
-        for p in px.chunks_exact_mut(4) {
+        for p in px.as_chunks_mut::<4>().0 {
             let a = p[3] as u32;
             if a > 0 && a < 255 {
                 for ch in &mut p[..3] {

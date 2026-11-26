@@ -10,6 +10,12 @@ use std::sync::{Mutex, OnceLock};
 pub const APP: &str = "ClaudeUsageWidget";
 
 pub fn data_dir() -> PathBuf {
+    // CUW_DATA_DIR (testing only): keep a test instance's files away from the real ones.
+    if let Some(d) = std::env::var_os("CUW_DATA_DIR") {
+        let d = PathBuf::from(d);
+        let _ = fs::create_dir_all(&d);
+        return d;
+    }
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home_dir);
     let d = base.join(APP);
     let _ = fs::create_dir_all(&d);
@@ -24,6 +30,10 @@ pub fn claude_dir() -> PathBuf {
     home_dir().join(".claude")
 }
 pub fn creds_path() -> PathBuf {
+    // CUW_CREDS_PATH (testing only): a fake credentials file for the mock-server tests.
+    if let Some(p) = std::env::var_os("CUW_CREDS_PATH") {
+        return PathBuf::from(p);
+    }
     claude_dir().join(".credentials.json")
 }
 pub fn projects_dir() -> PathBuf {
@@ -97,11 +107,10 @@ impl Store {
         let user = load_json(&config_path());
         if let Some(Value::Object(u)) = &user {
             for (k, v) in u {
-                if let Some(d) = defaults.get(k) {
-                    if same_kind(d, v) {
+                if let Some(d) = defaults.get(k)
+                    && same_kind(d, v) {
                         cfg.insert(k.clone(), v.clone());
                     }
-                }
             }
         }
         if persist && user.as_ref() != Some(&Value::Object(cfg.clone())) {
@@ -143,11 +152,10 @@ impl Store {
         let snapshot = {
             let mut cfg = self.cfg.lock().unwrap();
             for (k, v) in changes {
-                if let Some(d) = defaults.get(k) {
-                    if same_kind(d, v) {
+                if let Some(d) = defaults.get(k)
+                    && same_kind(d, v) {
                         cfg.insert(k.clone(), v.clone());
                     }
-                }
             }
             cfg.clone()
         };

@@ -275,8 +275,8 @@ pub fn build_timeline(history: &History, five: &Window, eta: Option<f64>, update
     pts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let now_x = clamp01((now - start) / span);
     let (mut proj, mut hit) = (None, false);
-    if let Some(eta) = eta {
-        if five.pct < 100.0 {
+    if let Some(eta) = eta
+        && five.pct < 100.0 {
             if eta.is_infinite() {
                 proj = Some((1.0, five.pct));
             } else {
@@ -290,7 +290,6 @@ pub fn build_timeline(history: &History, five: &Window, eta: Option<f64>, update
                 }
             }
         }
-    }
     Some(Timeline {
         points: pts, last_x, now_x, now_pct: five.pct, proj, hit,
         start_label: fmt_clock(&from_ts(start)), end_label: fmt_clock(resets), level: level(five.pct),
@@ -335,8 +334,8 @@ pub fn build_model(lim: &LimitsSnapshot, history: &History, interval: f64, now: 
     let fresh = freshness(&lim.status, &lim.error, updated, !rows.is_empty(), interval, now);
     let (mut forecast, mut timeline, mut eta_now, mut verdict) = (None, None, None, None);
     let five_row = rows.iter().find(|r| r.key == "five_hour");
-    if let (Some(five), Some(row)) = (lim.windows.get("five_hour"), five_row) {
-        if !row.pending {
+    if let (Some(five), Some(row)) = (lim.windows.get("five_hour"), five_row)
+        && !row.pending {
             let eta = history.eta_seconds_at("five_hour", five, now);
             let age = updated.map(|u| now - u).unwrap_or(0.0);
             // The estimate is measured from the last sample.
@@ -366,7 +365,6 @@ pub fn build_model(lim: &LimitsSnapshot, history: &History, interval: f64, now: 
                 timeline = build_timeline(history, five, e, updated.unwrap_or(now), now);
             }
         }
-    }
     let iv = interval as i64;
     Model {
         status: lim.status.clone(), error: lim.error.clone(), plan: lim.plan.clone(), rows, fresh, forecast, timeline, verdict,

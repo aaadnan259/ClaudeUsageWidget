@@ -4,20 +4,46 @@
 
 use super::history::History;
 use super::{Window, from_ts, limit_meta, now, parse_iso};
-use crate::config::{Store, creds_path, data_dir, load_json, save_json};
+use crate::config::{Store, creds_path, load_json, save_json};
 use crate::logf;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const TOKEN_URLS: [&str; 2] =
     ["https://console.anthropic.com/v1/oauth/token", "https://platform.claude.com/v1/oauth/token"];
+/// Least time between two polls when something asks for an early refresh (menu, wake,
+/// a reset passing): repeated "Refresh now" clicks can't turn into a burst of requests.
+const MIN_GAP: f64 = 20.0;
+
+/// CUW_USAGE_URL / CUW_TOKEN_URL (testing only) point the widget at a local mock server.
+fn usage_url() -> String {
+    std::env::var("CUW_USAGE_URL").unwrap_or_else(|_| USAGE_URL.to_string())
+}
+fn token_urls() -> Vec<String> {
+    match std::env::var("CUW_TOKEN_URL") {
+        Ok(u) => vec![u],
+        Err(_) => TOKEN_URLS.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// Wait after a failed connection (offline, Wi-Fi not back after wake): retry quickly
+/// rather than leaving the widget grey for a whole refresh interval.
+pub fn offline_retry(fails: u32) -> f64 {
+    match fails {
+        0 => 0.0,
+        1 => 10.0,
+        2 => 20.0,
+        3 => 40.0,
+        _ => 80.0,
+    }
+}
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"; // Claude Code's public OAuth client id
 pub const USER_AGENT: &str = "claude-usage-widget/3.0";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -38,31 +64,35 @@ pub fn http_json(url: &str, headers: &[(&str, String)], body: Option<&str>) -> R
     let mut hdr: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     hdr.push(("User-Agent".into(), USER_AGENT.into()));
     hdr.push(("Accept".into(), "application/json".into()));
+    // Secrets never go on the command line or to disk. A GET's headers (with the access
+    // token) go through stdin. A POST's body (the token refresh, carrying the refresh
+    // token) goes through stdin instead, and its headers are non-secret.
     let mut cmd = Command::new(curl_path());
-    cmd.args(["-sS", "--max-time", "20", "-H", "@-", "-w", "\n%{http_code}"]);
-    let mut tmp = None;
-    if let Some(b) = body {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        let p = data_dir().join(format!(".req-{}-r-{}.json", std::process::id(), t.as_nanos()));
-        std::fs::write(&p, b).map_err(|e| FetchError::Connection(e.to_string()))?;
-        cmd.args(["-X", "POST", "--data-binary"]).arg(format!("@{}", p.display()));
-        hdr.push(("Content-Type".into(), "application/json".into()));
-        tmp = Some(p);
-    }
+    cmd.args(["-sS", "--max-time", "20", "-w", "\n%{http_code}"]);
+    let stdin_text = match body {
+        Some(b) => {
+            debug_assert!(!hdr.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")));
+            hdr.push(("Content-Type".into(), "application/json".into()));
+            for (k, v) in &hdr {
+                cmd.arg("-H").arg(format!("{k}: {v}"));
+            }
+            cmd.args(["-X", "POST", "--data-binary", "@-"]);
+            b.to_string()
+        }
+        None => {
+            cmd.args(["-H", "@-"]);
+            hdr.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n")
+        }
+    };
     cmd.arg(url).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let result = (|| {
+    let out = (|| {
         let mut child = cmd.spawn().map_err(|e| FetchError::Connection(e.to_string()))?;
         if let Some(mut stdin) = child.stdin.take() {
-            let text: Vec<String> = hdr.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-            let _ = stdin.write_all(text.join("\n").as_bytes());
+            let _ = stdin.write_all(stdin_text.as_bytes());
         }
         child.wait_with_output().map_err(|e| FetchError::Connection(e.to_string()))
-    })();
-    if let Some(p) = tmp {
-        let _ = std::fs::remove_file(p);
-    }
-    let out = result?;
+    })()?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(200).collect::<String>();
         return Err(FetchError::Connection(if err.is_empty() { format!("curl exit {:?}", out.status.code()) } else { err }));
@@ -79,7 +109,9 @@ pub fn http_json(url: &str, headers: &[(&str, String)], body: Option<&str>) -> R
 /// Status shown for an HTTP error from the usage endpoint.
 pub fn http_status(code: u16) -> (&'static str, String) {
     match code {
-        401 | 403 => ("expired", "Sign-in expired".into()),
+        401 => ("expired", "Sign-in expired".into()),
+        // 403 can also be a network/firewall block, so don't claim the sign-in expired
+        403 => ("error", "Access denied (HTTP 403)".into()),
         429 => ("error", "Rate-limited, retrying".into()),
         c => ("error", format!("HTTP {c}")),
     }
@@ -108,6 +140,9 @@ pub struct LimitsFetcher {
     heartbeat: AtomicU64,
     pub stopped: AtomicBool,
     backoff: AtomicU64,
+    /// Consecutive connection failures (for the quick offline retry).
+    fails: AtomicU32,
+    last_poll: AtomicU64,
     t0: f64,
     /// Called after each poll (posts a message to the UI thread).
     pub on_update: Mutex<Option<Box<dyn Fn() + Send>>>,
@@ -128,7 +163,8 @@ impl LimitsFetcher {
         LimitsFetcher {
             store, history, demo, state: Mutex::new(snap), wake: (Mutex::new(false), Condvar::new()),
             heartbeat: AtomicU64::new(now().to_bits()), stopped: AtomicBool::new(false),
-            backoff: AtomicU64::new(0), t0: now(), on_update: Mutex::new(None),
+            backoff: AtomicU64::new(0), fails: AtomicU32::new(0), last_poll: AtomicU64::new(0f64.to_bits()),
+            t0: now(), on_update: Mutex::new(None),
         }
     }
 
@@ -153,13 +189,27 @@ impl LimitsFetcher {
         }
     }
 
+    /// Renew the access token. Claude Code renews it too, so first re-read the file: if
+    /// the CLI already renewed it, use that and don't rotate the refresh token again (a
+    /// second rotation could leave a running Claude Code holding a dead refresh token).
     fn refresh_token(&self, oauth: &serde_json::Map<String, Value>) -> Result<serde_json::Map<String, Value>, FetchError> {
         let rt = oauth.get("refreshToken").and_then(Value::as_str).unwrap_or_default().to_string();
+        if let Some(cur) = Self::read_oauth() {
+            // A different token in the file than the one that just failed or expired means
+            // Claude Code renewed it meanwhile: use that instead of rotating again.
+            let used = oauth.get("accessToken").and_then(Value::as_str).unwrap_or_default();
+            let cur_at = cur.get("accessToken").and_then(Value::as_str).unwrap_or_default();
+            let cur_rt = cur.get("refreshToken").and_then(Value::as_str).unwrap_or_default();
+            if !cur_at.is_empty() && (cur_at != used || cur_rt != rt) {
+                logf!("using the token Claude Code already renewed");
+                return Ok(cur);
+            }
+        }
         let body = json!({"grant_type": "refresh_token", "refresh_token": rt, "client_id": CLIENT_ID}).to_string();
         let mut last = FetchError::Connection("no token endpoint".into());
         let mut tok = None;
-        for url in TOKEN_URLS {
-            match http_json(url, &[], Some(&body)) {
+        for url in token_urls() {
+            match http_json(&url, &[], Some(&body)) {
                 Ok(v) => {
                     tok = Some(v);
                     break;
@@ -187,8 +237,12 @@ impl LimitsFetcher {
         let exp = tok.get("expires_in").and_then(Value::as_i64).unwrap_or(3600);
         cur.insert("expiresAt".into(), json!(((now() + exp as f64) * 1000.0) as i64));
         data.insert("claudeAiOauth".into(), Value::Object(cur.clone()));
-        let _ = save_json(&creds_path(), &Value::Object(data));
-        logf!("refreshed access token");
+        if let Err(e) = save_json(&creds_path(), &Value::Object(data)) {
+            // The refresh token was rotated server-side; losing it would sign Claude Code out.
+            logf!("ERROR couldn't save the renewed sign-in to the credentials file: {e}");
+        } else {
+            logf!("refreshed access token");
+        }
         Ok(cur)
     }
 
@@ -280,19 +334,19 @@ impl LimitsFetcher {
         });
         let result: Result<BTreeMap<String, Window>, FetchError> = (|| {
             let has_refresh = oauth.get("refreshToken").and_then(Value::as_str).is_some();
-            if let Some(exp) = oauth.get("expiresAt").and_then(Value::as_f64) {
-                if exp / 1000.0 < now() + 60.0 && has_refresh {
+            if let Some(exp) = oauth.get("expiresAt").and_then(Value::as_f64)
+                && exp / 1000.0 < now() && has_refresh {
                     oauth = self.refresh_token(&oauth)?;
                 }
-            }
             let hdr = |o: &serde_json::Map<String, Value>| {
                 vec![("Authorization", format!("Bearer {}", o.get("accessToken").and_then(Value::as_str).unwrap_or_default())),
                      ("anthropic-beta", "oauth-2025-04-20".to_string())]
             };
-            let resp = match http_json(USAGE_URL, &hdr(&oauth), None) {
+            let url = usage_url();
+            let resp = match http_json(&url, &hdr(&oauth), None) {
                 Err(FetchError::Http(401)) if has_refresh => {
                     oauth = self.refresh_token(&oauth)?;
-                    http_json(USAGE_URL, &hdr(&oauth), None)?
+                    http_json(&url, &hdr(&oauth), None)?
                 }
                 r => r?,
             };
@@ -320,8 +374,10 @@ impl LimitsFetcher {
                 }
                 self.history.add(t, &windows);
                 self.backoff.store(0, Ordering::Relaxed);
+                self.fails.store(0, Ordering::Relaxed);
             }
             Err(FetchError::Http(code)) => {
+                self.fails.store(0, Ordering::Relaxed);
                 logf!("WARNING usage HTTP {code}");
                 let (status, error) = http_status(code);
                 self.set_status(status, &error);
@@ -331,10 +387,12 @@ impl LimitsFetcher {
                 }
             }
             Err(FetchError::Unexpected(e)) => {
+                self.fails.store(0, Ordering::Relaxed);
                 logf!("WARNING usage response: {e}");
                 self.set_status("error", "Unexpected response");
             }
             Err(FetchError::Connection(e)) => {
+                self.fails.fetch_add(1, Ordering::Relaxed);
                 logf!("WARNING usage fetch failed: {e}");
                 self.set_status("error", "Offline");
             }
@@ -343,10 +401,14 @@ impl LimitsFetcher {
 
     pub fn next_wait(&self) -> f64 {
         if self.demo {
-            3.0
-        } else {
-            self.store.cfg_u64("limits_refresh_seconds").max(30) as f64 + self.backoff.load(Ordering::Relaxed) as f64
+            return 3.0;
         }
+        let interval = self.store.cfg_u64("limits_refresh_seconds").max(30) as f64;
+        let quick = offline_retry(self.fails.load(Ordering::Relaxed));
+        if quick > 0.0 {
+            return quick.min(interval);
+        }
+        interval + self.backoff.load(Ordering::Relaxed) as f64
     }
 
     /// True if the thread has missed its schedule (a stuck call).
@@ -357,6 +419,7 @@ impl LimitsFetcher {
     pub fn run(self: Arc<Self>) {
         loop {
             self.set_heartbeat(now());
+            self.last_poll.store(now().to_bits(), Ordering::Relaxed);
             self.poll_once();
             self.set_heartbeat(now());
             if let Some(cb) = self.on_update.lock().unwrap().as_ref() {
@@ -364,11 +427,23 @@ impl LimitsFetcher {
             }
             // Wait in short steps against the wall clock: Windows timed waits don't
             // advance while the PC sleeps, so one long wait can overrun by hours.
-            let deadline = now() + self.next_wait();
+            let mut deadline = now() + self.next_wait();
             let (m, c) = &self.wake;
             let mut woke = m.lock().unwrap();
-            while now() < deadline && !self.stopped.load(Ordering::Relaxed) && !*woke {
-                woke = c.wait_timeout(woke, Duration::from_secs(5)).unwrap().0;
+            while now() < deadline && !self.stopped.load(Ordering::Relaxed) {
+                if *woke {
+                    *woke = false;
+                    // An early refresh was asked for. Not while rate-limited (that's what
+                    // got us blocked), and never sooner than MIN_GAP after the last poll.
+                    if self.backoff.load(Ordering::Relaxed) == 0 {
+                        let gap = if self.demo { 1.0 } else { MIN_GAP };
+                        let earliest = f64::from_bits(self.last_poll.load(Ordering::Relaxed)) + gap;
+                        deadline = deadline.min(earliest.max(now()));
+                        continue;
+                    }
+                }
+                let step = (deadline - now()).clamp(0.05, 5.0);
+                woke = c.wait_timeout(woke, Duration::from_secs_f64(step)).unwrap().0;
             }
             *woke = false;
             drop(woke);
@@ -431,9 +506,37 @@ mod tests {
     }
 
     #[test]
+    fn offline_retries_quickly_then_backs_off() {
+        assert_eq!((1..=6).map(offline_retry).collect::<Vec<_>>(), vec![10.0, 20.0, 40.0, 80.0, 80.0, 80.0]);
+        let f = LimitsFetcher::new(Arc::new(Store::for_tests()), Arc::new(History::new(vec![], false)), false);
+        f.fails.store(1, Ordering::Relaxed);
+        assert_eq!(f.next_wait(), 10.0);
+        f.fails.store(0, Ordering::Relaxed);
+        assert_eq!(f.next_wait(), 120.0);
+    }
+
+    #[test]
+    fn uses_the_token_claude_code_already_renewed() {
+        // The credentials file already holds a newer token than the one that failed:
+        // renewing again would rotate the refresh token under Claude Code, so don't.
+        let p = std::env::temp_dir().join(format!("cuw-creds-{}.json", std::process::id()));
+        std::fs::write(&p, r#"{"claudeAiOauth":{"accessToken":"at-cli","refreshToken":"rt-cli","expiresAt":9999999999999}}"#).unwrap();
+        // SAFETY: tests touching CUW_CREDS_PATH run only here.
+        unsafe { std::env::set_var("CUW_CREDS_PATH", &p) };
+        let f = fetcher();
+        let mut old = serde_json::Map::new();
+        old.insert("accessToken".into(), json!("at-old"));
+        old.insert("refreshToken".into(), json!("rt-old"));
+        let got = f.refresh_token(&old).ok().unwrap(); // no network: returns the file's token
+        unsafe { std::env::remove_var("CUW_CREDS_PATH") };
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(got.get("accessToken").and_then(Value::as_str), Some("at-cli"));
+    }
+
+    #[test]
     fn http_errors_map_to_honest_statuses() {
         assert_eq!(http_status(401), ("expired", "Sign-in expired".to_string()));
-        assert_eq!(http_status(403).0, "expired");
+        assert_eq!(http_status(403), ("error", "Access denied (HTTP 403)".to_string()));
         assert_eq!(http_status(429), ("error", "Rate-limited, retrying".to_string()));
         assert_eq!(http_status(503), ("error", "HTTP 503".to_string()));
     }

@@ -19,7 +19,7 @@ pub struct Taskbar {
     list: Option<ITaskbarList3>,
     icons: Vec<HICON>,
     key: String,
-    last: Option<(Option<f64>, u32, String)>,
+    last: Option<(Option<f64>, u32, String, bool)>,
 }
 
 impl Taskbar {
@@ -45,8 +45,10 @@ impl Taskbar {
         }
     }
 
-    pub fn update(&mut self, g: &Gfx, pct: Option<f64>, color: u32, title: &str) {
-        self.last = Some((pct, color, title.to_string()));
+    /// `progress = false` hides the progress bar (stale data: Windows has no grey bar, and
+    /// a green/amber/red one would look current).
+    pub fn update(&mut self, g: &Gfx, pct: Option<f64>, color: u32, title: &str, progress: bool) {
+        self.last = Some((pct, color, title.to_string(), progress));
         self.apply(g, false);
     }
 
@@ -56,7 +58,7 @@ impl Taskbar {
     }
 
     fn apply(&mut self, g: &Gfx, force: bool) {
-        let Some((pct, color, title)) = self.last.clone() else { return };
+        let Some((pct, color, title, progress)) = self.last.clone() else { return };
         unsafe {
             let t = wide(&title);
             let _ = SetWindowTextW(self.hwnd, PCWSTR(t.as_ptr()));
@@ -77,7 +79,7 @@ impl Taskbar {
                 self.icons.extend(big.into_iter().chain(small));
             }
             if let Some(l) = &self.list {
-                match pct {
+                match pct.filter(|_| progress) {
                     None => {
                         let _ = l.SetProgressState(self.hwnd, TBPF_NOPROGRESS);
                     }

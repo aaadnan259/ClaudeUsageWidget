@@ -35,10 +35,12 @@ Opening it while it's already running pops its card open.
   - `CUW_DEMO_STILL=1`: keeps the values steady
   - `CUW_DEMO_SCENARIO=warn`, `crit` or `pending`: 80%, 93%, or a reset that happens while updates have stopped ("reset · updating")
   - `CUW_INSTALL_QUIET=1` with `--install` / `--uninstall`: no message box (for scripts)
+- **Network tests:** `python rust\scripts\mock_network_test.py rust\target\release\ClaudeUsageWidget.exe` runs the widget against a local stand-in for Anthropic's server, with a fake sign-in in a temporary folder. It covers token renewal, 401/403/429, offline retries, the refresh throttle and the crash restart. Quit the installed widget first.
 
 ### Troubleshooting
 - **Nothing appears:** look at `%APPDATA%\ClaudeUsageWidget\widget.log`. A start-up failure also shows an error box.
-- **Numbers show grey with an amber dot:** they're the last known values. Hover the pill to see why ("Offline", "Sign-in expired", …).
+- **Numbers show grey with an amber dot:** they're the last known values. Hover the pill to see why ("Offline", "Sign-in expired", "Access denied", …). After waking the PC or going offline, it retries within 10–40 seconds rather than waiting the full interval.
+- **"Refresh now" seems to do nothing:** refreshes are spaced at least 20 s apart, and paused while rate-limited ("Rate-limited, retrying"), so they can't make a rate limit worse.
   If it says the sign-in expired, run `claude` and `/login` again.
 
 ## Using it
@@ -87,7 +89,7 @@ Measured on the development machine:
 
 ## Tests
 ```
-cd rust && cargo test                              (Rust: 30 tests)
+cd rust && cargo test                              (Rust: 33 tests)
 .venv\Scripts\python.exe -m unittest discover -s tests -v   (Python version)
 ```
 

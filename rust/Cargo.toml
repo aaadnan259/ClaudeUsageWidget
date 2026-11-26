@@ -50,5 +50,7 @@ features = [
 opt-level = "s"
 lto = true
 codegen-units = 1
-panic = "abort"
+# unwind (not abort): a panic on a worker thread ends just that thread (the watchdog
+# replaces the fetcher; the log scanner catches its own), not the whole widget
+panic = "unwind"
 strip = true

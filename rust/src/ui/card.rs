@@ -47,14 +47,19 @@ pub enum Hit {
     StaleTip,
 }
 
+/// A hit-test rectangle (x, y, w, h in DIPs) and what it is.
+type HitRect = ((f32, f32, f32, f32), Hit);
+
 pub struct CardView {
     pub view: String, // "bars" | "rings"
     pub acrylic: bool,
     pub settings_open: bool,
+    /// Leave out the activity section when the full card wouldn't fit on the screen.
+    pub compact: bool,
     pub hm_week: Cell<usize>,
     pub hover: RefCell<Option<Hit>>,
     pub cursor: Cell<Option<(f32, f32)>>,
-    hits: RefCell<Vec<((f32, f32, f32, f32), Hit)>>,
+    hits: RefCell<Vec<HitRect>>,
     arcs: Vec<Tween>,
     counts: Vec<Tween>,
     line: Tween,
@@ -75,7 +80,7 @@ fn empty_text(m: &Model) -> (&'static str, String) {
 impl CardView {
     pub fn new() -> CardView {
         CardView {
-            view: "rings".into(), acrylic: true, settings_open: false, hm_week: Cell::new(0),
+            view: "rings".into(), acrylic: true, settings_open: false, compact: false, hm_week: Cell::new(0),
             hover: RefCell::new(None), cursor: Cell::new(None), hits: RefCell::new(Vec::new()),
             arcs: Vec::new(), counts: Vec::new(),
             line: Tween::new(1200), t0: Instant::now(), point: Cell::new(None),
@@ -158,7 +163,9 @@ impl CardView {
         if m.timeline.is_some() {
             y += 16.0 + 15.0 + 6.0 + TL_H;
         }
-        y += card_extra::activity_h(ctx.stats);
+        if !self.compact {
+            y += card_extra::activity_h(ctx.stats);
+        }
         y + 14.0 + 15.0 + PAD_BOTTOM
     }
 
@@ -211,8 +218,10 @@ impl CardView {
             self.draw_timeline(c, t, m, y);
             y += 15.0 + 6.0 + TL_H;
         }
-        self.draw_activity(c, t, ctx, y);
-        y += card_extra::activity_h(ctx.stats);
+        if !self.compact {
+            self.draw_activity(c, t, ctx, y);
+            y += card_extra::activity_h(ctx.stats);
+        }
         y += 14.0;
         self.draw_footer(c, t, m, y);
         self.draw_cell_tip(c, ctx, h);
@@ -273,11 +282,10 @@ impl CardView {
         if let Some(b) = c.solid_brush(t.fg) {
             c.text(title, 14.0, W650, PAD_X, y + 6.0, CW, 19.0, Align::Left, &b, &[]);
         }
-        if !sub.is_empty() {
-            if let Some(b) = c.solid_brush(t.sub) {
+        if !sub.is_empty()
+            && let Some(b) = c.solid_brush(t.sub) {
                 c.text_wrapped(&sub, 12.5, 400, PAD_X, y + 6.0 + 19.0 + 4.0, CW, 18.75, &b);
             }
-        }
     }
 
     // ------------------------------------------------------------ limits
@@ -486,11 +494,10 @@ impl CardView {
                 c.stroke_circle_brush(xf(p.0), yf(100.0), 3.5, 1.4, &sb);
             }
         }
-        if nx - lx > 3.0 {
-            if let (Some(fb), Some(st)) = (c.solid_brush(t.faint), c.g.dashed(&[1.0, 3.0], 1.0)) {
+        if nx - lx > 3.0
+            && let (Some(fb), Some(st)) = (c.solid_brush(t.faint), c.g.dashed(&[1.0, 3.0], 1.0)) {
                 c.line_styled(nx, oy + TL_TOP, nx, oy + TL_BOT, 1.0, &fb, Some(&st));
             }
-        }
         // the point and its pulsing halo are compositor layers (gfx::Halo), placed by the app
         self.point.set(Some((lx, ly, fresh, c2)));
         // axis labels
@@ -613,9 +620,20 @@ fn row_icon(c: &Canvas, key: &str, x: f32, y: f32, size: f32, b: &ID2D1Brush) {
     }
 }
 
+/// Does a card of `height_dip` at `scale` need compact mode to fit `avail_px`?
+pub fn needs_compact(height_dip: f32, scale: f32, avail_px: i32) -> bool {
+    (height_dip * scale).ceil() as i32 > avail_px
+}
+
 #[cfg(test)]
 mod tests {
-    use super::partial;
+    use super::{needs_compact, partial};
+
+    #[test]
+    fn compact_only_when_the_card_would_not_fit() {
+        assert!(!needs_compact(690.0, 1.75, 1700)); // the dev machine: fits
+        assert!(needs_compact(690.0, 1.25, 700)); // 1366x768 at 125%: too tall
+    }
 
     #[test]
     fn partial_line_by_length() {

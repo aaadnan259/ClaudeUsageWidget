@@ -92,6 +92,24 @@ target\release\ClaudeUsageWidget.exe --install     (make it the installed app)
 - **A real 429.**
 - **Other monitors, display scalings and taskbar positions.** These need other hardware or a change to the user's display settings.
 
+**Second audit (2026-11-26), all fixed:**
+- **Offline:** retries after 10 / 20 / 40 / 80 s (no more grey for a full interval after wake or boot).
+- **Early refreshes** (menu, wake, reset) are spaced at least 20 s apart and ignored while rate-limited.
+- **The token-refresh body** goes to `curl` on stdin; nothing secret touches disk.
+- **403** reads "Access denied (HTTP 403)", not "Sign-in expired".
+- **Sign-in renewal** happens only once the token has actually expired, or on a 401. It re-reads the credentials file first and uses Claude Code's renewed token if there is one; a failed save of a rotated token is logged as an ERROR.
+- **Tray tooltip and taskbar title** give the real reason when there are no numbers yet.
+- **Taskbar progress** is hidden while data is stale.
+- **Drag:** a scale change mid-drag keeps the pill under the cursor, and losing mouse capture ends the drag cleanly.
+- **Compact card:** if the full card is taller than the screen, the activity section is left out.
+- **Crashes:** `panic = "unwind"`. A UI-thread crash restarts the widget once, with a 2-minute loop guard; worker threads recover on their own.
+- **Message loop:** `GetMessageW` returning -1 ends the loop.
+- **Code:** clippy is clean, the stale comments are fixed, and `legacy/` and the Python leftovers in the data folder are removed.
+- **Verified:**
+  - `rust/scripts/mock_network_test.py`: 12/12 against a mock server
+  - real clicks on the tray icon and the taskbar button: both open the card with focus
+  - 33 unit tests
+
 **Icon updates:** the installer names the icon file after its contents (`app-<hash>.ico`) and deletes older ones. Explorer caches shortcut icons by path, so reusing `app.ico` kept showing the old icon after a redesign.
 
 **Install / switch over** (`--install`):

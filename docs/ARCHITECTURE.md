@@ -186,7 +186,6 @@ cuw/web/glass.css         Shared design tokens (dark/light), glass layers, gradi
 cuw/web/pill.html         Pill UI (bars/ring/text) + JS.
 cuw/web/card.html         Card UI (rings/bars, forecast, timeline, stats, heatmap, settings) + JS.
 tests/test_core.py        14 unit tests.
-legacy/claude_usage_widget_v2.pyw   Previous single-file tkinter version (reference only, not used).
 docs/ARCHITECTURE.md      This file.
 ```
 
@@ -599,7 +598,6 @@ What's left: about 72 MB is Python plus .NET/WinForms, about 37 MB the WebView2 
   - 100% / 125% DPI (only 175% tested)
 - The hidden card window still exists, sharing the renderer. The first `opened()` animation runs while the card fades in.
 - Toasts come from pystray's tray balloon. They work on Windows 11, but there's no click action.
-- The `legacy/` folder isn't maintained.
 
 ---
 
@@ -632,7 +630,7 @@ The user asked for a taskbar widget showing Claude usage, updated live, and aske
 - Alerts, autostart, fullscreen hide, hover dim, a theme-following details panel.
 - Fixes: borderless windows don't get focus events, so a mouse-poll replaced `<FocusOut>` for closing the panel; a sign-in message that overflowed.
 
-### v2: tkinter + Pillow, TokenEater style (`legacy/claude_usage_widget_v2.pyw`)
+### v2: tkinter + Pillow, TokenEater style (was `legacy/claude_usage_widget_v2.pyw`; removed 2026-11-26, still in git history)
 - Moved the project to `Downloads\Projects\ClaudeUsageWidget`.
 - A card antialiased by Pillow, a bars/rings toggle, green accent, dragging, a taskbar button with an ITaskbarList3 progress overlay, a pace forecast, `curl` for HTTP.
 - Fixes:

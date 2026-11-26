@@ -34,6 +34,8 @@ use windows::core::{PCWSTR, w};
 pub const HOST_CLASS: PCWSTR = w!("ClaudeUsageWidgetHost"); // same as the Python app
 pub const WM_APP_UPDATE: u32 = 0x8001;
 pub const WM_APP_SHOW: u32 = 0x8003;
+/// Same as the menu's "Refresh now" (scripts and tests).
+pub const WM_APP_REFRESH: u32 = 0x8004;
 const TICK_TIMER: usize = 1;
 const ANIM_TIMER: usize = 2;
 const CARD_ANIM_TIMER: usize = 3;
@@ -217,7 +219,12 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
         logf!("started (rust{})", if demo { ", demo" } else { "" });
 
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+        loop {
+            // 0 = WM_QUIT, -1 = error: either way the loop is over (BOOL(-1) is "true")
+            let r = GetMessageW(&mut msg, None, 0, 0).0;
+            if r == 0 || r == -1 {
+                break;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -230,6 +237,17 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
         let _ = windows::Win32::System::Threading::TerminateProcess(windows::Win32::System::Threading::GetCurrentProcess(), 0);
     }
     std::process::exit(0);
+}
+
+/// Why there are no numbers to show yet (tray tooltip / taskbar title).
+fn no_data_reason(status: &str, error: &str) -> String {
+    match status {
+        "loading" => "connecting…".into(),
+        "signin" => "not signed in: run `claude`, then /login".into(),
+        "expired" => "sign-in expired: run `claude`, then /login".into(),
+        _ if !error.is_empty() => error.to_string(),
+        _ => "no data yet".into(),
+    }
 }
 
 fn want_light(store: &Store) -> bool {
@@ -372,7 +390,7 @@ impl App {
                 (Some(f.pct), color, tip)
             }
             Some(_) => (None, NONE, "Claude · limit reset, updating…".to_string()),
-            None => (None, NONE, "Claude usage — run `claude` then /login".to_string()),
+            None => (None, NONE, format!("Claude usage · {}", no_data_reason(&m.status, &m.error))),
         };
         self.tray.update(&self.gfx, pct, color, &tip);
         if let Some(tb) = self.taskbar.as_mut() {
@@ -380,9 +398,9 @@ impl App {
                 Some(f) if !f.pending => format!("Claude {} · {}{}", f.pct_text(), f.reset_short,
                                                  if m.fresh.state == FreshState::Stale { " (stale)" } else { "" }),
                 Some(_) => "Claude usage · updating".to_string(),
-                None => "Claude usage".to_string(),
+                None => format!("Claude usage · {}", no_data_reason(&m.status, &m.error)),
             };
-            tb.update(&self.gfx, pct, color, &title);
+            tb.update(&self.gfx, pct, color, &title, m.fresh.state != FreshState::Stale);
         }
     }
 
@@ -464,6 +482,10 @@ impl App {
 
     // ---------------------------------------------------------------- main tick (1 s)
     fn on_tick(&mut self) {
+        // CUW_TEST_CRASH=1 (testing only): crash the UI thread 5 s in, to check the restart.
+        if self.tick == 5 && std::env::var_os("CUW_TEST_CRASH").is_some() {
+            panic!("CUW_TEST_CRASH: deliberate test crash");
+        }
         let t = now();
         if t - self.last_tick > 30.0 {
             // woke from sleep: fresh numbers now; time asleep isn't a stuck thread
@@ -479,7 +501,7 @@ impl App {
             self.theme = if light { theme::light() } else { theme::dark() };
             self.view.acrylic = W::style_glass(self.pill, !light);
             self.card_view.acrylic = W::style_glass(self.card, !light);
-                W::set_menu_theme(!light);
+            W::set_menu_theme(!light);
             self.drawn_key.clear();
         }
         self.push(false);
@@ -488,7 +510,7 @@ impl App {
             logf!("alert: {title}");
             self.tray.notify(&title, &msg);
         }
-        if self.tick % 5 == 0 {
+        if self.tick.is_multiple_of(5) {
             self.autostart = W::autostart_enabled();
         }
         self.reset_boundary_refresh();
@@ -497,7 +519,7 @@ impl App {
             W::set_topmost(self.pill);
         }
         self.tick += 1;
-        if self.tick % 15 == 0 && self.drag.is_none() {
+        if self.tick.is_multiple_of(15) && self.drag.is_none() {
             self.place_pill(); // follows taskbar / resolution changes
         }
     }
@@ -665,6 +687,22 @@ impl App {
         }
     }
 
+    /// Use compact mode (no activity section) if the full card is taller than the screen.
+    fn fit_card(&mut self, scale: f32) {
+        let (stats, cfg) = (self.stats.lock().unwrap().clone(), self.store.cfg());
+        let ctx = CardCtx { stats: stats.as_ref(), cfg: &cfg, autostart: self.autostart };
+        let (pw, ph) = self.pill_size();
+        let (_, _, work) = W::monitor_info(self.pos.0 + pw / 2, self.pos.1 + ph / 2);
+        let gap = (10.0 * scale).round() as i32;
+        let was = self.card_view.compact;
+        self.card_view.compact = false;
+        let full = self.card_view.height(&self.gfx, &self.model, &ctx);
+        self.card_view.compact = crate::ui::card::needs_compact(full, scale, work.b - work.t - 2 * gap);
+        if self.card_view.compact && !was {
+            logf!("screen too short for the full card: hiding the activity section");
+        }
+    }
+
     /// Above the pill, right-aligned with it; below it if there's no room above.
     fn card_rect(&self, scale: f32) -> (i32, i32, i32, i32) {
         let w = (CARD_W * scale).round() as i32;
@@ -693,11 +731,13 @@ impl App {
         *self.card_view.hover.borrow_mut() = None;
         self.push(false);
         self.card_scale = W::dpi_scale(self.pill);
+        self.fit_card(self.card_scale);
         let (x, y, w, h) = self.card_rect(self.card_scale);
         W::place(self.card, x, y, Some((w, h)));
         let s = W::dpi_scale(self.card);
         if s != self.card_scale {
             self.card_scale = s;
+            self.fit_card(s);
             let (x, y, w, h) = self.card_rect(s);
             W::place(self.card, x, y, Some((w, h)));
         }
@@ -737,6 +777,7 @@ impl App {
             return;
         }
         // grow/shrink with the content
+        self.fit_card(self.card_scale);
         let (x, y, w, h) = self.card_rect(self.card_scale);
         if (w, h) != self.card_size {
             self.card_size = (w, h);
@@ -756,9 +797,9 @@ impl App {
             self.card_surface = None;
             return;
         }
-        // Full redraw only when the content changes; otherwise copy the cache and draw
-        // just the halo (software rendering makes full 60 fps redraws expensive).
-        // Redraw only on visible change: "now" moves 1 chart pixel every ~56 s.
+        // Redraw only on a visible change (software rendering makes full redraws costly):
+        // "now" is rounded to chart pixels (it moves one every ~56 s), the halo is a
+        // compositor layer, and only the open animations redraw every frame.
         let mut km = self.model.clone();
         if let Some(t) = km.timeline.as_mut() {
             t.now_x = (t.now_x * 320.0).round() / 320.0;
@@ -938,11 +979,41 @@ impl App {
         }
     }
 
-    fn on_lbutton_up(&mut self) {
-        unsafe {
-            let _ = ReleaseCapture();
+    /// The pill crossed onto a monitor with another scale.
+    fn on_dpi_changed(&mut self) {
+        if self.drag.is_some() {
+            // mid-drag: resize in place; placing it at the saved spot would snap it back
+            self.scale = W::dpi_scale(self.pill);
+            let (w, h) = self.pill_size();
+            W::place(self.pill, self.pos.0, self.pos.1, Some((w, h)));
+            self.drawn_key.clear();
+            self.draw();
+        } else {
+            self.place_pill();
         }
+    }
+
+    /// Mouse capture was taken away mid-drag (another window, a system dialog): finish
+    /// the drag where it is, without treating it as a click.
+    fn on_capture_lost(&mut self) {
         let Some(d) = self.drag.take() else { return };
+        if d.moved {
+            self.store.state.lock().unwrap().insert("pill_pos".into(), json!([self.pos.0, self.pos.1]));
+            self.store.save_state();
+            self.place_pill();
+        }
+    }
+
+    fn on_lbutton_up(&mut self) {
+        let Some(d) = self.drag.take() else {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+            return;
+        };
+        unsafe {
+            let _ = ReleaseCapture(); // (our WM_CAPTURECHANGED sees no drag now)
+        }
         if d.moved {
             // Use the final cursor position: mouse-move messages coalesce on fast drags.
             let (cx, cy) = W::cursor_pos();
@@ -995,6 +1066,10 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     a.show_card();
                 }
             });
+            LRESULT(0)
+        }
+        WM_APP_REFRESH => {
+            with_app(|a| a.limits.refresh_now());
             LRESULT(0)
         }
         // Asked to close (the installer updating it, or Windows): quit cleanly so the tray
@@ -1059,7 +1134,11 @@ unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             LRESULT(0)
         }
         WM_DPICHANGED => {
-            with_app(|a| a.place_pill());
+            with_app(|a| a.on_dpi_changed());
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            with_app(|a| a.on_capture_lost());
             LRESULT(0)
         }
         WM_PAINT => {
