@@ -12,6 +12,16 @@ Keep it updated when you change behaviour. The *Gotchas* and *Change history* se
 
 ---
 
+> **Two implementations.**
+> - **The native Rust app in `rust/` is the installed one, at feature parity:** about 15 MB, under 1% of one CPU core. Its plan, measurements and lessons are in `rust/PLAN.md`.
+> - **The Python + WebView2 version in `cuw/` is the fallback.** Most of this document describes it.
+>
+> Both share the data files, the data sources, the view-model rules (§6.4) and the gotchas about the API, `reset_key()`, freshness and sleep. Rust-specific notes:
+> - drawing is Direct2D in software (WARP) over DirectComposition + DWM acrylic
+> - animations run in the compositor
+> - demo mode and tests never write the config/state files
+> - Quit terminates the process right after the message loop (destroying the graphics objects at thread exit hangs)
+
 ## 1. What it is
 
 A Windows 11 desktop widget that shows the user's **Claude plan usage limits live**.
@@ -723,3 +733,13 @@ The user chose a fully native rewrite: Direct2D + DirectComposition, real Window
   | First log scan | 2.8 s | 0.6 s |
 
 - `rust/PLAN.md` has the details. Going back to Python is `Install.bat`.
+
+### Audit fixes after the Rust switch-over (2026-11-26)
+- **Quit:** Quit and the installer's close request now exit properly. Before, the process hung while destroying the graphics objects at thread exit. It now terminates right after the message loop, and the host handles `WM_CLOSE`.
+- **Second launch:** opens the card rather than toggling it.
+- **No writes from demo or tests:** `--demo` and the tests never write `config.json` or `state.json`. The alert tests used to overwrite the real `state.json`.
+- **Pill right-click:** keeps an open card open.
+- **Logging:** one line per log entry.
+- **CPU on real data:** halved, 1.28% → 0.64%, by caching the history series.
+- **Ported:** the card open animation (compositor), the stale footer tooltip, the exe icon and version info, and menus that follow the widget's theme.
+- **Docs:** README, this header and `CLAUDE.md` now describe the Rust app as the installed one.

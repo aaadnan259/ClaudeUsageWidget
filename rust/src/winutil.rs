@@ -170,15 +170,16 @@ pub fn item(id: u32, text: &str, checked: bool) -> MenuItem {
     MenuItem::Item { id, text: text.into(), checked, enabled: true }
 }
 
-/// Let Win32 popup menus follow the Windows dark/light setting. Uses uxtheme's
-/// SetPreferredAppMode (ordinal 135, Windows 10 1903+); harmless if unavailable.
-pub fn allow_dark_menus() {
+/// Make Win32 popup menus dark or light to match the widget's theme. Uses uxtheme's
+/// SetPreferredAppMode (ordinal 135, Windows 10 1903+; 2 = force dark, 3 = force light);
+/// harmless if unavailable.
+pub fn set_menu_theme(dark: bool) {
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     unsafe {
         let Ok(ux) = LoadLibraryW(w!("uxtheme.dll")) else { return };
         if let Some(f) = GetProcAddress(ux, PCSTR(135 as *const u8)) {
             let set_mode: extern "system" fn(i32) -> i32 = std::mem::transmute(f);
-            set_mode(1); // AllowDark: follow the system theme
+            set_mode(if dark { 2 } else { 3 });
         }
         if let Some(f) = GetProcAddress(ux, PCSTR(136 as *const u8)) {
             let flush: extern "system" fn() = std::mem::transmute(f);

@@ -51,7 +51,6 @@ fn main() {
             return;
         }
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        winutil::allow_dark_menus();
         if let Err(e) = app::run(demo) {
             logf!("ERROR start-up failed: {e}");
             let text = HSTRING::from(format!(

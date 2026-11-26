@@ -22,6 +22,9 @@ pub struct History {
     pub demo: bool,
     pub samples: Mutex<Vec<Sample>>,
     peak_cache: Mutex<Option<((String, String, usize), Option<f64>)>>,
+    /// series() results per (key, window, sample count): the model asks twice a second,
+    /// and re-parsing every sample's timestamp each time was most of the idle CPU.
+    series_cache: Mutex<std::collections::HashMap<(String, String), (usize, Vec<(f64, f64)>)>>,
 }
 
 fn round_to(v: f64, places: i32) -> f64 {
@@ -31,7 +34,7 @@ fn round_to(v: f64, places: i32) -> f64 {
 
 impl History {
     pub fn new(samples: Vec<Sample>, demo: bool) -> History {
-        History { demo, samples: Mutex::new(samples), peak_cache: Mutex::new(None) }
+        History { demo, samples: Mutex::new(samples), peak_cache: Mutex::new(None), series_cache: Mutex::new(Default::default()) }
     }
 
     pub fn load(demo: bool) -> History {
@@ -119,12 +122,24 @@ impl History {
     pub fn series(&self, key: &str, resets: Option<&DateTime<Utc>>) -> Vec<(f64, f64)> {
         let rk = reset_key(resets);
         let v = self.samples.lock().unwrap();
-        v.iter()
+        let ck = (key.to_string(), rk.clone());
+        if let Some((n, pts)) = self.series_cache.lock().unwrap().get(&ck) {
+            if *n == v.len() {
+                return pts.clone();
+            }
+        }
+        let pts: Vec<(f64, f64)> = v.iter()
             .filter_map(|s| {
                 let (pct, r) = s.w.get(key)?;
                 (reset_key(parse_iso(r.as_deref()).as_ref()) == rk).then_some((s.t, *pct))
             })
-            .collect()
+            .collect();
+        let mut c = self.series_cache.lock().unwrap();
+        if c.len() > 8 {
+            c.clear();
+        }
+        c.insert(ck, (v.len(), pts.clone()));
+        pts
     }
 
     /// Seconds until 100% at the recent pace. None = not enough data, inf = not rising.
@@ -250,6 +265,15 @@ mod tests {
         assert_eq!(h.prev_window_peak("seven_day", Some(&from_ts(cur))), Some(81.6));
         let none = History::new(vec![sample(cur - d, "seven_day", 50.0, cur)], false);
         assert_eq!(none.prev_window_peak("seven_day", Some(&from_ts(cur))), None);
+    }
+
+    #[test]
+    fn series_cache_refreshes_when_samples_change() {
+        let r = 1_800_000_000.0;
+        let h = History::new(vec![sample(1.0, "five_hour", 1.0, r)], false);
+        assert_eq!(h.series("five_hour", Some(&from_ts(r))).len(), 1);
+        h.samples.lock().unwrap().push(sample(2.0, "five_hour", 2.0, r));
+        assert_eq!(h.series("five_hour", Some(&from_ts(r))).len(), 2);
     }
 
     #[test]

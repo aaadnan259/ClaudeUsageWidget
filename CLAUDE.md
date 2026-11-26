@@ -2,7 +2,8 @@
 
 A Windows 11 taskbar widget that shows live Claude plan limits: the 5-hour session % and the weekly %.
 It's a frosted-glass pill above the taskbar, plus a details card with rings or bars, a pace forecast, a 5-hour timeline, Claude Code activity, a heatmap and settings.
-Python 3.14 + pywebview (WebView2) + plain HTML/CSS/JS + ctypes Win32.
+**The installed app is the native Rust version in `rust/`** (Direct2D + DirectComposition + Win32 via the `windows` crate). Read `rust/PLAN.md` before changing it.
+The original Python 3.14 + pywebview (WebView2) version in `cuw/` is kept as a fallback, and `Install.bat` switches back to it. Both share `%APPDATA%\ClaudeUsageWidget\`.
 It's personal use for one user (Claude Pro, mostly Claude Code).
 
 **Read `docs/ARCHITECTURE.md` before non-trivial changes.** It has:
@@ -16,11 +17,18 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
 - the change history
 
 ## Commands
-- Run: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw` (add `--demo` for fake data that never calls the API; also set `CUW_DEMO_OFFLINE=1` and demo mode goes "offline" after 25 s, so you can check the stale UI)
-- Tests: `.venv\Scripts\python.exe -m unittest discover -s tests -v`
-- Install / repair the app (venv, shortcuts, icon, autostart): `Install.bat`
-- Stop it: tray icon → Quit, or the right-click pill menu → Quit
-- Logs: `%APPDATA%\ClaudeUsageWidget\widget.log`, plus `startup.log` for launch problems
+- **Rust (the app):**
+  - Build: `cd rust && cargo build --release`
+  - Demo: `target\release\ClaudeUsageWidget.exe --demo`. Demo mode never writes config/state. `CUW_DEMO_OFFLINE=1` goes stale after 25 s; `CUW_DEMO_STILL=1` holds values steady for performance checks.
+  - Tests: `cargo test`
+  - Install or update: `target\release\ClaudeUsageWidget.exe --install`. It replaces the running copy, updates the shortcuts and autostart, and restarts. `--uninstall` removes them.
+- **Python (fallback):**
+  - Run: `.venv\Scripts\pythonw.exe claude_usage_widget.pyw` (add `--demo`)
+  - Tests: `.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - Install / switch back: `Install.bat`
+- **Stop it:** right-click the pill → Quit, or the tray icon → Quit.
+- **Logs:** `%APPDATA%\ClaudeUsageWidget\widget.log`. Rust lines end in `[rust]`.
+- **Before testing against the real app:** an installed instance holds the single-instance lock, so a `--demo` launch just opens the real card. Quit or stop the installed one first.
 
 ## Map
 - `claude_usage_widget.pyw`: entry point. Hands off to `.venv`, single instance, start-up error box.

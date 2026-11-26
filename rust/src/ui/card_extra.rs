@@ -17,6 +17,7 @@ pub struct CardCtx<'a> {
 pub const STATS_TIP: &str = "Claude Code only, from local logs: input + output + cache-write tokens (cache reads excluded). \
 Responses = model responses, including tool steps. Tokens/min = average over the last 10 minutes. \
 claude.ai chats are not included here, but do count toward your plan limits above.";
+pub const STALE_TIP: &str = "Showing the last known values until the next successful update.";
 pub const PEAK_TIP: &str = "Highest weekly % the widget recorded in your previous weekly window (it only records while it is running).";
 
 const W600: u32 = 600;

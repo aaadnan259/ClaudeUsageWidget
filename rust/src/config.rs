@@ -85,10 +85,13 @@ fn same_kind(a: &Value, b: &Value) -> bool {
 pub struct Store {
     cfg: Mutex<Map<String, Value>>,
     pub state: Mutex<Map<String, Value>>,
+    /// false for --demo and tests: settings and state changes stay in memory, so a demo
+    /// run never rewrites the user's config.json / state.json.
+    persist: bool,
 }
 
 impl Store {
-    pub fn load() -> Store {
+    pub fn load(persist: bool) -> Store {
         let defaults = default_config();
         let mut cfg = defaults.clone();
         let user = load_json(&config_path());
@@ -101,20 +104,20 @@ impl Store {
                 }
             }
         }
-        if user.as_ref() != Some(&Value::Object(cfg.clone())) {
+        if persist && user.as_ref() != Some(&Value::Object(cfg.clone())) {
             let _ = save_json(&config_path(), &Value::Object(cfg.clone()));
         }
         let state = match load_json(&state_path()) {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
         };
-        Store { cfg: Mutex::new(cfg), state: Mutex::new(state) }
+        Store { cfg: Mutex::new(cfg), state: Mutex::new(state), persist }
     }
 
     /// In-memory store for tests.
     #[cfg(test)]
     pub fn for_tests() -> Store {
-        Store { cfg: Mutex::new(default_config()), state: Mutex::new(Map::new()) }
+        Store { cfg: Mutex::new(default_config()), state: Mutex::new(Map::new()), persist: false }
     }
 
     #[cfg(test)]
@@ -148,10 +151,15 @@ impl Store {
             }
             cfg.clone()
         };
-        let _ = save_json(&config_path(), &Value::Object(snapshot));
+        if self.persist {
+            let _ = save_json(&config_path(), &Value::Object(snapshot));
+        }
     }
 
     pub fn save_state(&self) {
+        if !self.persist {
+            return;
+        }
         let snapshot = self.state.lock().unwrap().clone();
         if let Err(e) = save_json(&state_path(), &Value::Object(snapshot)) {
             log(&format!("WARNING state save: {e}"));
@@ -176,7 +184,8 @@ pub fn log(msg: &str) {
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&p) {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let level = if msg.starts_with("WARNING") || msg.starts_with("ERROR") { "" } else { "INFO " };
-        let _ = writeln!(f, "{ts} {level}{msg} [rust]");
+        let one_line = msg.replace("\r\n", " | ").replace('\n', " | ");
+        let _ = writeln!(f, "{ts} {level}{one_line} [rust]");
     }
 }
 

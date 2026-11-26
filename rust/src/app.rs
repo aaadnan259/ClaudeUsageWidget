@@ -12,7 +12,7 @@ use crate::model::{FreshState, Level, Model, build_model, fmt_tokens};
 use crate::tray::{Tray, WM_TRAY};
 use crate::taskbar::Taskbar;
 use crate::ui::card::{CARD_W, CardView, Hit};
-use crate::ui::card_extra::{CardCtx, PEAK_TIP, STATS_TIP};
+use crate::ui::card_extra::{CardCtx, PEAK_TIP, STALE_TIP, STATS_TIP};
 use crate::ui::gfx::{Gfx, Halo, Surface};
 use crate::ui::pill::{PillView, pill_key, size_for};
 use crate::ui::theme::{self, Theme};
@@ -127,7 +127,7 @@ fn spawn_fetcher(f: &Arc<LimitsFetcher>, host: HWND) {
 
 pub fn run(demo: bool) -> windows::core::Result<()> {
     let gfx = Gfx::new()?;
-    let store = Arc::new(Store::load());
+    let store = Arc::new(Store::load(!demo));
     let history = Arc::new(History::load(demo));
     let limits = Arc::new(LimitsFetcher::new(store.clone(), history.clone(), demo));
     unsafe {
@@ -161,6 +161,7 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
                                       CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, Some(pill), None, Some(hinst.into()), None)
             .unwrap_or_default();
         let light = want_light(&store);
+        W::set_menu_theme(!light);
         let mut app = App {
             gfx, store: store.clone(), history, limits: limits.clone(), demo, host, pill, surface: None,
             tooltip, tooltip_text: String::new(), view: PillView::new(), pos: (0, 0), scale: W::dpi_scale(pill),
@@ -221,7 +222,14 @@ pub fn run(demo: bool) -> windows::core::Result<()> {
             DispatchMessageW(&msg);
         }
     }
-    Ok(())
+    // Exit right away, skipping teardown. Destroying the thread-local App (Direct2D /
+    // DirectComposition / COM objects) during thread shutdown hung the process (Quit left
+    // it running invisibly), and a normal exit faults in DLL detach. Everything worth
+    // keeping is already on disk and the tray icon was removed in quit().
+    unsafe {
+        let _ = windows::Win32::System::Threading::TerminateProcess(windows::Win32::System::Threading::GetCurrentProcess(), 0);
+    }
+    std::process::exit(0);
 }
 
 fn want_light(store: &Store) -> bool {
@@ -383,7 +391,7 @@ impl App {
         if self.card_tip.is_invalid() {
             return;
         }
-        for (id, text) in [(1usize, STATS_TIP), (2, PEAK_TIP)] {
+        for (id, text) in [(1usize, STATS_TIP), (2, PEAK_TIP), (3, STALE_TIP)] {
             let mut buf = W::wide(text);
             let mut ti = TTTOOLINFOW {
                 cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32, uFlags: TTF_SUBCLASS, hwnd: self.card, uId: id,
@@ -404,8 +412,8 @@ impl App {
         }
         let rects = self.card_view.tip_rects();
         let s = self.card_scale;
-        for id in [1usize, 2] {
-            let want = if id == 1 { Hit::StatsTip } else { Hit::PeakTip };
+        for id in [1usize, 2, 3] {
+            let want = match id { 1 => Hit::StatsTip, 2 => Hit::PeakTip, _ => Hit::StaleTip };
             let r = rects.iter().find(|(_, h)| *h == want).map(|(r, _)| *r).unwrap_or((0.0, 0.0, 0.0, 0.0));
             let mut ti = TTTOOLINFOW {
                 cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32, hwnd: self.card, uId: id,
@@ -471,6 +479,7 @@ impl App {
             self.theme = if light { theme::light() } else { theme::dark() };
             self.view.acrylic = W::style_glass(self.pill, !light);
             self.card_view.acrylic = W::style_glass(self.card, !light);
+                W::set_menu_theme(!light);
             self.drawn_key.clear();
         }
         self.push(false);
@@ -616,6 +625,7 @@ impl App {
                 self.theme = if light { theme::light() } else { theme::dark() };
                 self.view.acrylic = W::style_glass(self.pill, !light);
                 self.card_view.acrylic = W::style_glass(self.card, !light);
+                W::set_menu_theme(!light);
                 self.halo = None;
                 self.card_surface = None;
             }
@@ -694,6 +704,9 @@ impl App {
         self.card_size = (w, h);
         self.card_view.replay(&self.model);
         self.draw_card();
+        if let Some(s) = self.card_surface.as_ref() {
+            let _ = s.animate_in(&self.gfx); // fade + slide up, run by the compositor
+        }
         unsafe {
             let _ = ShowWindow(self.card, SW_SHOW);
             let _ = SetForegroundWindow(self.card);
@@ -841,7 +854,7 @@ impl App {
     fn on_card_move(&mut self, lp: LPARAM) {
         let (x, y) = self.card_point(lp);
         self.card_view.cursor.set(Some((x, y)));
-        let over = self.card_view.hit_at(x, y).filter(|h| !matches!(h, Hit::StatsTip | Hit::PeakTip));
+        let over = self.card_view.hit_at(x, y).filter(|h| !matches!(h, Hit::StatsTip | Hit::PeakTip | Hit::StaleTip));
         if over != *self.card_view.hover.borrow() {
             *self.card_view.hover.borrow_mut() = over;
             let mut tme = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.card, dwHoverTime: 0 };
@@ -950,8 +963,10 @@ impl App {
 }
 
 fn show_menu(owner: HWND, which: &str) {
-    let Some((items, above)) = with_app(|a| {
-        if which == "tray" { (a.tray_menu(), None) } else { (a.pill_menu(), Some(a.pos.1 - a.px(6.0))) }
+    let Some((items, above, owner)) = with_app(|a| {
+        // With the card open, the card owns the menu so it keeps focus and stays open.
+        let owner = if which == "pill" && a.card_open { a.card } else { owner };
+        if which == "tray" { (a.tray_menu(), None, owner) } else { (a.pill_menu(), Some(a.pos.1 - a.px(6.0)), owner) }
     }) else { return };
     let cmd = W::popup_menu(owner, &items, above);
     if cmd != 0 {
@@ -970,7 +985,22 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             LRESULT(0)
         }
         WM_APP_SHOW => {
-            with_app(|a| a.toggle_card());
+            with_app(|a| {
+                if a.card_open {
+                    unsafe {
+                        let _ = SetForegroundWindow(a.card);
+                    }
+                } else {
+                    a.card_closed_at = Instant::now() - Duration::from_secs(5);
+                    a.show_card();
+                }
+            });
+            LRESULT(0)
+        }
+        // Asked to close (the installer updating it, or Windows): quit cleanly so the tray
+        // icon is removed instead of lingering.
+        WM_CLOSE => {
+            with_app(|a| a.quit());
             LRESULT(0)
         }
         WM_TRAY => {
@@ -1000,6 +1030,9 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
 unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        // Clicking the pill activates it (that's what lets the card take focus when it
+        // opens) — except while the card is open, so the card keeps focus.
+        WM_MOUSEACTIVATE if with_app(|a| a.card_open).unwrap_or(false) => LRESULT(MA_NOACTIVATE as isize),
         WM_LBUTTONDOWN => {
             with_app(|a| a.on_lbutton_down());
             LRESULT(0)

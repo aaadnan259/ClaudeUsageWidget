@@ -249,6 +249,28 @@ impl Surface {
             self.swap.Present(1, DXGI_PRESENT(0)).ok()
         }
     }
+
+    /// The card's open animation from card.html: fade in over 0.25 s and slide up 8 DIP
+    /// over 0.3 s, ease-out. A DirectComposition animation, so it costs no redraws.
+    pub fn animate_in(&self, g: &Gfx) -> Result<()> {
+        unsafe {
+            // ease-out cubic as a single cubic segment: v(t) = a + b t + c t^2 + d t^3
+            let fade = g.dcomp.CreateAnimation()?;
+            let d = 0.25f32;
+            fade.AddCubic(0.0, 0.0, 3.0 / d, -3.0 / (d * d), 1.0 / (d * d * d))?;
+            fade.End(d as f64, 1.0)?;
+            let slide = g.dcomp.CreateAnimation()?;
+            let d2 = 0.3f32;
+            let dist = 8.0 * self.scale;
+            slide.AddCubic(0.0, dist, -3.0 * dist / d2, 3.0 * dist / (d2 * d2), -dist / (d2 * d2 * d2))?;
+            slide.End(d2 as f64, 0.0)?;
+            let fx = g.dcomp.CreateEffectGroup()?;
+            fx.SetOpacity(&fade)?;
+            self.visual.SetEffect(&fx)?;
+            self.visual.SetOffsetY(&slide)?;
+            g.dcomp.Commit()
+        }
+    }
 }
 
 /// A small marker (a dot) with a pulsing halo, as two child layers over a surface.

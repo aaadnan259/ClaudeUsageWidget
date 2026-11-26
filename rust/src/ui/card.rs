@@ -44,6 +44,7 @@ pub enum Hit {
     Quit,
     StatsTip,
     PeakTip,
+    StaleTip,
 }
 
 pub struct CardView {
@@ -94,7 +95,7 @@ impl CardView {
 
     /// Rectangles of the hover-tooltip areas (stats tiles, last week's peak).
     pub fn tip_rects(&self) -> Vec<((f32, f32, f32, f32), Hit)> {
-        self.hits.borrow().iter().filter(|(_, h)| matches!(h, Hit::StatsTip | Hit::PeakTip)).cloned().collect()
+        self.hits.borrow().iter().filter(|(_, h)| matches!(h, Hit::StatsTip | Hit::PeakTip | Hit::StaleTip)).cloned().collect()
     }
 
     pub fn sync(&mut self, m: &Model) {
@@ -517,7 +518,10 @@ impl CardView {
             (m.fresh.label.clone(), t.sub)
         };
         if let Some(b) = c.solid_brush(col) {
-            c.text(&txt, 11.0, 400, PAD_X, y, 240.0, 15.0, Align::Left, &b, &[]);
+            let w = c.text(&txt, 11.0, 400, PAD_X, y, 240.0, 15.0, Align::Left, &b, &[]);
+            if stale {
+                self.add_hit((PAD_X, y, w, 15.0), Hit::StaleTip);
+            }
         }
         let ivl = format!("every {}", m.interval_label);
         let w = c.g.text_width(&ivl, 11.0, 400).ceil() + 1.0;

@@ -67,6 +67,18 @@ target\release\ClaudeUsageWidget.exe --install     (make it the installed app)
 | First log scan (190 MB) | 2.8 s | **0.6 s** |
 | Install size | `.venv` + Python | **~720 KB `.exe`** |
 
+**Audit fixes (2026-11-26, after the switch-over):**
+- **Quit:** Quit and the installer's close request now exit properly. Before, the process hung while destroying graphics objects at thread exit and stayed running invisibly. The app now terminates right after the message loop, and the host window handles `WM_CLOSE` by removing the tray icon and quitting.
+- **Second launch:** it opens the card or brings it to the front; it never toggles it closed.
+- **No writes from demo or tests:** `--demo` and the tests never write `config.json` or `state.json`. The alert tests used to overwrite the real `state.json`.
+- **Right-click on the pill keeps the card open:** the pill doesn't take focus while the card is open, and the menu is owned by the card.
+- **Logging:** multi-line log messages are joined onto one line.
+- **CPU on real data, 1.28% → 0.64%:** the history `series()` results are cached per (window, sample count). The rest is log scanning while Claude Code is busy.
+- **Card open animation** (fade + slide up) via a DirectComposition animation.
+- **Stale footer tooltip** ported.
+- **Exe icon and version info** via `rc.exe` in `build.rs`.
+- **Menus follow the widget's Theme setting.**
+
 **Install / switch over** (`--install`):
 1. Copies the `.exe` and icon to `%LOCALAPPDATA%\Programs\ClaudeUsageWidget`.
 2. Creates Start menu and Desktop shortcuts carrying the `ClaudeUsageWidget` AppUserModelID.
