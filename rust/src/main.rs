@@ -2,10 +2,13 @@
 //! crash logging, then the app's message loop.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod alerts;
 mod app;
 mod config;
 mod data;
+mod install;
 mod model;
+mod taskbar;
 mod tray;
 mod ui;
 mod winutil;
@@ -22,12 +25,19 @@ use windows::core::{HSTRING, w};
 
 fn main() {
     let demo = std::env::args().any(|a| a == "--demo");
+    let install = std::env::args().any(|a| a == "--install");
+    let uninstall = std::env::args().any(|a| a == "--uninstall");
     std::panic::set_hook(Box::new(|info| {
         logf!("ERROR panic: {info}");
     }));
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = SetCurrentProcessExplicitAppUserModelID(w!("ClaudeUsageWidget"));
+        if install || uninstall {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            if install { install::install() } else { install::uninstall() }
+            return;
+        }
         // Same mutex as the Python app: the two can never run (and poll the API) together.
         let _mutex = CreateMutexW(None, false, w!("Local\\ClaudeUsageWidget"));
         if GetLastError() == ERROR_ALREADY_EXISTS {

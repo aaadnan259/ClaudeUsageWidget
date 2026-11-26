@@ -75,7 +75,7 @@ impl Tray {
         let key = format!("{:?}|{color:06x}", pct.map(|p| p.round() as i64));
         if key != self.key {
             self.key = key;
-            if let Ok(icon) = ring_icon(g, pct, color) {
+            if let Ok(icon) = ring_icon(g, pct, color, 32) {
                 if let Some(old) = self.icon.replace(icon) {
                     unsafe {
                         let _ = DestroyIcon(old);
@@ -112,8 +112,7 @@ impl Tray {
 }
 
 /// The ring icon: grey track, coloured arc for the session %, the number in the middle.
-pub fn ring_icon(g: &Gfx, pct: Option<f64>, color: u32) -> Result<HICON> {
-    let size = 32u32;
+pub fn ring_icon(g: &Gfx, pct: Option<f64>, color: u32, size: u32) -> Result<HICON> {
     unsafe {
         let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
         let bmp = wic.CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)?;

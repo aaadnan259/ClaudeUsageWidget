@@ -5,7 +5,6 @@ use crate::model::Level;
 
 #[derive(Clone, Copy)]
 pub struct Theme {
-    pub light: bool,
     pub fg: Rgba,
     pub sub: Rgba,
     pub faint: Rgba,
@@ -28,7 +27,6 @@ const TINT_OVER_ACRYLIC: f32 = 0.55;
 pub fn dark() -> Theme {
     let fgc = Rgba(235.0 / 255.0, 238.0 / 255.0, 245.0 / 255.0, 1.0);
     Theme {
-        light: false,
         fg: Rgba::hex(0xf4f5f8, 1.0),
         sub: fgc.alpha(0.62),
         faint: fgc.alpha(0.38),
@@ -50,7 +48,6 @@ pub fn light() -> Theme {
     let fgc = Rgba::hex(0x16171c, 1.0);
     let ink = Rgba::hex(0x0a1428, 1.0);
     Theme {
-        light: true,
         fg: fgc,
         sub: fgc.alpha(0.62),
         faint: fgc.alpha(0.40),

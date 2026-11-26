@@ -222,6 +222,28 @@ pub fn popup_menu(owner: HWND, items: &[MenuItem], bottom_y: Option<i32>) -> u32
     }
 }
 
+const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+
+/// Is "Start with Windows" on (our value exists in the HKCU Run key)?
+pub fn autostart_enabled() -> bool {
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, w!("ClaudeUsageWidget"), RRF_RT_REG_SZ, None, None, None).is_ok() }
+}
+
+/// Turn "Start with Windows" on (pointing at this .exe) or off.
+pub fn set_autostart(on: bool) -> windows::core::Result<()> {
+    unsafe {
+        if on {
+            let exe = std::env::current_exe().map_err(|_| windows::core::Error::empty())?;
+            let cmd = wide(&format!("\"{}\"", exe.display()));
+            RegSetKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("ClaudeUsageWidget"), REG_SZ.0,
+                            Some(cmd.as_ptr() as *const c_void), (cmd.len() * 2) as u32).ok()
+        } else {
+            let r = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("ClaudeUsageWidget"));
+            if r.is_ok() || r == ERROR_FILE_NOT_FOUND { Ok(()) } else { r.ok() }
+        }
+    }
+}
+
 pub fn open_folder(path: &std::path::Path) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }

@@ -1,20 +1,22 @@
-//! The details card: header, limits (bars or rings), pace forecast, 5-hour timeline and
-//! footer. A port of card.html (phase 2: no activity section or settings yet).
+//! The details card: header, limits (bars or rings), pace forecast, 5-hour timeline,
+//! Claude Code activity and footer, or the settings panel. A port of card.html.
 //! Coordinates are DIPs; the card is 360 wide and as tall as its content.
 
 use super::anim::{Tween, pulse};
 use super::gfx::{Align, Canvas, Gfx};
 use super::theme::Theme;
 use crate::model::{FcLevel, FreshState, Level, Model, Row};
-use std::cell::Cell;
+use super::card_extra::{self, CardCtx};
+use serde_json::Value;
+use std::cell::{Cell, RefCell};
 use std::time::Instant;
 use windows::Win32::Graphics::Direct2D::ID2D1Brush;
 
 pub const CARD_W: f32 = 360.0;
-const PAD_X: f32 = 20.0;
+pub(crate) const PAD_X: f32 = 20.0;
 const PAD_TOP: f32 = 18.0;
 const PAD_BOTTOM: f32 = 14.0;
-const CW: f32 = CARD_W - 2.0 * PAD_X; // 320
+pub(crate) const CW: f32 = CARD_W - 2.0 * PAD_X; // 320
 const BARS_ROW: f32 = 76.0;
 const RINGS_H: f32 = 179.0;
 const TL_W: f32 = 320.0;
@@ -28,10 +30,30 @@ const W650: u32 = 650;
 const W700: u32 = 700;
 const W800: u32 = 800;
 
+/// Things on the card you can hover or click.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Hit {
+    View,
+    Gear,
+    WeekPrev,
+    WeekNext,
+    Cell(usize, usize),
+    Set(&'static str, Value),
+    Done,
+    Folder,
+    Quit,
+    StatsTip,
+    PeakTip,
+}
+
 pub struct CardView {
     pub view: String, // "bars" | "rings"
-    pub btn_hover: bool,
     pub acrylic: bool,
+    pub settings_open: bool,
+    pub hm_week: Cell<usize>,
+    pub hover: RefCell<Option<Hit>>,
+    pub cursor: Cell<Option<(f32, f32)>>,
+    hits: RefCell<Vec<((f32, f32, f32, f32), Hit)>>,
     arcs: Vec<Tween>,
     counts: Vec<Tween>,
     line: Tween,
@@ -52,14 +74,27 @@ fn empty_text(m: &Model) -> (&'static str, String) {
 impl CardView {
     pub fn new() -> CardView {
         CardView {
-            view: "rings".into(), btn_hover: false, acrylic: true, arcs: Vec::new(), counts: Vec::new(),
+            view: "rings".into(), acrylic: true, settings_open: false, hm_week: Cell::new(0),
+            hover: RefCell::new(None), cursor: Cell::new(None), hits: RefCell::new(Vec::new()),
+            arcs: Vec::new(), counts: Vec::new(),
             line: Tween::new(1200), t0: Instant::now(), point: Cell::new(None),
         }
     }
 
-    /// The view-toggle button (x, y, w, h).
-    pub fn view_btn(&self) -> (f32, f32, f32, f32) {
-        (CARD_W - PAD_X - 30.0, PAD_TOP, 30.0, 30.0)
+    pub(crate) fn add_hit(&self, r: (f32, f32, f32, f32), h: Hit) {
+        self.hits.borrow_mut().push((r, h));
+    }
+
+    /// What's under (x, y) DIP, from the last draw (last added wins).
+    pub fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
+        self.hits.borrow().iter().rev()
+            .find(|((rx, ry, rw, rh), _)| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
+            .map(|(_, h)| h.clone())
+    }
+
+    /// Rectangles of the hover-tooltip areas (stats tiles, last week's peak).
+    pub fn tip_rects(&self) -> Vec<((f32, f32, f32, f32), Hit)> {
+        self.hits.borrow().iter().filter(|(_, h)| matches!(h, Hit::StatsTip | Hit::PeakTip)).cloned().collect()
     }
 
     pub fn sync(&mut self, m: &Model) {
@@ -111,7 +146,10 @@ impl CardView {
         if self.view == "bars" { BARS_ROW * m.rows.len() as f32 } else { RINGS_H }
     }
 
-    pub fn height(&self, g: &Gfx, m: &Model) -> f32 {
+    pub fn height(&self, g: &Gfx, m: &Model, ctx: &CardCtx) -> f32 {
+        if self.settings_open {
+            return PAD_TOP + 30.0 + 14.0 + card_extra::settings_h() + PAD_BOTTOM;
+        }
         let mut y = PAD_TOP + 30.0 + 14.0 + self.limits_h(g, m);
         if m.forecast.is_some() {
             y += 12.0 + 18.0;
@@ -119,11 +157,13 @@ impl CardView {
         if m.timeline.is_some() {
             y += 16.0 + 15.0 + 6.0 + TL_H;
         }
+        y += card_extra::activity_h(ctx.stats);
         y + 14.0 + 15.0 + PAD_BOTTOM
     }
 
-    pub fn draw(&self, c: &mut Canvas, t: &Theme, m: &Model) {
-        let h = self.height(c.g, m);
+    pub fn draw(&self, c: &mut Canvas, t: &Theme, m: &Model, ctx: &CardCtx) {
+        self.hits.borrow_mut().clear();
+        let h = self.height(c.g, m, ctx);
         // background
         if !self.acrylic {
             c.fill_rect(0.0, 0.0, CARD_W, h, 0.0, t.body);
@@ -143,6 +183,10 @@ impl CardView {
         let mut y = PAD_TOP;
         self.draw_header(c, t, m, y);
         y += 30.0 + 14.0;
+        if self.settings_open {
+            self.draw_settings(c, t, ctx, y);
+            return;
+        }
         let stale = m.fresh.state == FreshState::Stale;
         c.alpha = if stale { 0.5 } else { 1.0 };
         if m.rows.is_empty() {
@@ -166,8 +210,11 @@ impl CardView {
             self.draw_timeline(c, t, m, y);
             y += 15.0 + 6.0 + TL_H;
         }
+        self.draw_activity(c, t, ctx, y);
+        y += card_extra::activity_h(ctx.stats);
         y += 14.0;
         self.draw_footer(c, t, m, y);
+        self.draw_cell_tip(c, ctx, h);
     }
 
     // ------------------------------------------------------------ header
@@ -184,11 +231,24 @@ impl CardView {
                 c.text(plan, 11.0, W600, px, y, pw, 30.0, Align::Center, &sub, &[]);
             }
         }
-        let (bx, by, bw, bh) = self.view_btn();
-        if self.btn_hover {
+        // gear (settings), rightmost
+        let (gx, gy) = (CARD_W - PAD_X - 30.0, y);
+        let ghover = self.hover.borrow().as_ref() == Some(&Hit::Gear) || self.settings_open;
+        if ghover {
+            c.fill_rect(gx, gy, 30.0, 30.0, 9.0, t.chip);
+        }
+        if let Some(b) = c.solid_brush(if ghover { t.fg } else { t.sub }) {
+            gear(c, gx + 15.0, gy + 15.0, &b);
+        }
+        self.add_hit((gx, gy, 30.0, 30.0), Hit::Gear);
+        // view toggle, left of the gear
+        let (bx, by, bw, bh) = (gx - 9.0 - 30.0, y, 30.0, 30.0);
+        self.add_hit((bx, by, bw, bh), Hit::View);
+        let vhover = self.hover.borrow().as_ref() == Some(&Hit::View);
+        if vhover {
             c.fill_rect(bx, by, bw, bh, 9.0, t.chip);
         }
-        let col = if self.btn_hover { t.fg } else { t.sub };
+        let col = if vhover { t.fg } else { t.sub };
         let Some(b) = c.solid_brush(col) else { return };
         // icon shows the *other* view, 17px in a 24-unit box
         let k = 17.0 / 24.0;
@@ -248,7 +308,10 @@ impl CardView {
                 Some(p) => format!("{} · last week {p}%", r.sub),
                 None => r.sub.clone(),
             };
-            c.text(&s, 11.5, 400, tx, y + 20.0, 200.0, 15.5, Align::Left, &sub, &[]);
+            let sw = c.text(&s, 11.5, 400, tx, y + 20.0, 200.0, 15.5, Align::Left, &sub, &[]);
+            if r.prev_peak.is_some() {
+                self.add_hit((tx, y + 20.0, sw, 15.5), Hit::PeakTip);
+            }
             c.text(&r.reset_card, 11.0, 400, PAD_X, y + 29.0, CW, 14.6, Align::Right, &sub, &[]);
         }
         // big number
@@ -322,6 +385,7 @@ impl CardView {
             }
             if let (Some(p), Some(faint)) = (r.prev_peak, c.solid_brush(t.faint)) {
                 c.text(&format!("Last week peaked at {p}%"), 11.0, 400, x, y + 165.0, 140.0, 13.0, Align::Center, &faint, &[]);
+                self.add_hit((x, y + 165.0, 140.0, 13.0), Hit::PeakTip);
             }
         }
     }
@@ -491,6 +555,17 @@ fn partial(pts: &[(f32, f32)], frac: f32) -> Vec<(f32, f32)> {
         out.push(w[1]);
     }
     out
+}
+
+/// A settings gear (17 px): a ring with eight teeth and a hub.
+fn gear(c: &Canvas, cx: f32, cy: f32, b: &ID2D1Brush) {
+    c.stroke_circle_brush(cx, cy, 5.0, 1.7, b);
+    c.stroke_circle_brush(cx, cy, 2.2, 1.6, b);
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::TAU / 8.0;
+        let (s, co) = (a.sin(), a.cos());
+        c.line(cx + 5.6 * s, cy - 5.6 * co, cx + 7.8 * s, cy - 7.8 * co, 2.2, b);
+    }
 }
 
 fn spark(c: &Canvas, t: &Theme, x: f32, y: f32, size: f32) {

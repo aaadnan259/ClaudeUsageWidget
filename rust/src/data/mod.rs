@@ -1,6 +1,7 @@
 //! Data sources: plan limits (Anthropic), limit history + forecast.
 
 pub mod fetch;
+pub mod logs;
 pub mod history;
 
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};

@@ -128,10 +128,6 @@ impl History {
     }
 
     /// Seconds until 100% at the recent pace. None = not enough data, inf = not rising.
-    pub fn eta_seconds(&self, key: &str, w: &Window) -> Option<f64> {
-        self.eta_seconds_at(key, w, now())
-    }
-
     pub fn eta_seconds_at(&self, key: &str, w: &Window, at: f64) -> Option<f64> {
         let min_span = if self.demo { 20.0 } else { 240.0 };
         let pts: Vec<(f64, f64)> =

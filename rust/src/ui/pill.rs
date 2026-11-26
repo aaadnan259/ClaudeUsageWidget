@@ -21,6 +21,8 @@ pub struct PillView {
     pub dim_setting: bool,
     pub hover: bool,
     pub acrylic: bool,
+    /// Today's Claude Code tokens, shown in the no-limits message (e.g. before sign-in).
+    pub today: Option<String>,
     bars: [Tween; 2],
     ring: Tween,
     dim: Tween,
@@ -33,7 +35,7 @@ const W700: u32 = 700;
 impl PillView {
     pub fn new() -> PillView {
         PillView {
-            style: "bars".into(), dim_setting: true, hover: false, acrylic: true,
+            style: "bars".into(), dim_setting: true, hover: false, acrylic: true, today: None,
             bars: [Tween::new(1000), Tween::new(1000)], ring: Tween::new(1000), dim: Tween::new(250),
             pulse_t0: Instant::now(),
         }
@@ -248,6 +250,10 @@ impl PillView {
             "expired" => ("Sign-in expired", "Run claude → /login".to_string()),
             "error" => ("Claude usage", if m.error.is_empty() { "Can't reach Anthropic".to_string() } else { m.error.clone() }),
             _ => ("Claude usage", String::new()),
+        };
+        let sub = match (&self.today, m.status.as_str()) {
+            (Some(td), s) if s != "loading" => format!("{sub} · {td} today"),
+            _ => sub,
         };
         Self::spark(c, t, 12.0, (h - 16.0) / 2.0, 16.0);
         let x = 12.0 + 16.0 + 10.0;

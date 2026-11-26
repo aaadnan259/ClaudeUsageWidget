@@ -48,15 +48,37 @@ cd rust
 cargo build --release
 target\release\ClaudeUsageWidget.exe --demo
 cargo test
+target\release\ClaudeUsageWidget.exe --install     (make it the installed app)
 ```
-Not done yet; this is phase 3:
-- the Claude Code activity section and heatmap
-- the settings panel (the gear)
-- alerts
-- the taskbar button
-- autostart and the installer
+**Phase 3 is done (2026-11-26): feature parity.**
+- **Activity:** the `LogScanner` port, three stat tiles with an explanatory tooltip, and the 4-week heatmap with paging, a shared colour scale, glow and a hover tooltip.
+- **Settings panel (the gear):** pill style, theme, Start with Windows, the alert toggles, fade when idle, hide in fullscreen, taskbar button, refresh interval, plus Done, Data folder and Quit.
+- **Alerts:** 75/90 thresholds, the timely reset notice and the "limit ahead" pace alert. They're saved in `state.json` in the same shapes, so switching between the apps never repeats one.
+- **Taskbar button:** the ring icon, with `ITaskbarList3` progress that's green, amber "paused" at 75% and red at 90%. Clicking it toggles the card; closing it quits.
+- **Autostart:** the first real run switches it on, as the Python app does.
+- **Installer:** `ClaudeUsageWidget.exe --install` / `--uninstall`.
+- **Tests:** 27, plus a timing test against the real logs that's normally skipped: `cargo test --release real_logs_timing -- --ignored --nocapture`.
 
-Autostart is never touched before phase 3.
+| Measured, same conditions | Python app | Rust app |
+|---|---|---|
+| Memory | ~181 MB (80 Python + 101 WebView2), 8 processes | **14.6 MB** private, 1 process |
+| CPU, card closed | 1.69% of one core | **0.44%** (mostly log scanning while Claude Code is busy) |
+| CPU, card open | — | 1.15% |
+| First log scan (190 MB) | 2.8 s | **0.6 s** |
+| Install size | `.venv` + Python | **~720 KB `.exe`** |
+
+**Install / switch over** (`--install`):
+1. Copies the `.exe` and icon to `%LOCALAPPDATA%\Programs\ClaudeUsageWidget`.
+2. Creates Start menu and Desktop shortcuts carrying the `ClaudeUsageWidget` AppUserModelID.
+3. Points the Run key at the `.exe`.
+4. Closes any running widget (Python or Rust) with `WM_CLOSE` to its host window, then starts the installed one.
+
+`CUW_INSTALL_TEST=<dir>` installs into a folder without touching the shortcuts, the Run key or running widgets. **To go back** to the Python app, run `Install.bat`.
+
+Learned in phase 3:
+- `serde_json` needs `preserve_order`. `state.json`'s `alerts` map is trimmed oldest-first like the Python dict, and BTreeMap ordering would drop the wrong entries.
+- The taskbar button must be its own unowned window, because a minimised owner hides the windows it owns (the pill and the card are owned by the hidden host).
+- The heatmap tooltip sits next to the hovered **cell**, not the cursor, so the card only redraws when the cell changes and not on every mouse move.
 
 **Testing note:** back up `%APPDATA%\ClaudeUsageWidget\config.json` and `state.json` with `Copy-Item`, never PowerShell `Set-Content -Encoding utf8`. That writes a BOM, and the Python app then resets the settings to defaults. It happened once during phase 2 testing and was fixed by hand.
 

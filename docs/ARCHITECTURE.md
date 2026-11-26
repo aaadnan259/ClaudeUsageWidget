@@ -705,3 +705,21 @@ The user chose a fully native rewrite: Direct2D + DirectComposition, real Window
 - **Focus:** the pill is activatable, so the card can take focus for Esc and close-on-deactivate.
 - **Test switch:** demo-only `CUW_DEMO_STILL=1` (in `rust/`) holds values steady for performance checks.
 - **Details:** `rust/PLAN.md`.
+
+### Native Rust port, phase 3: parity (2026-11-26, branch `rust-port`)
+- **Ported:**
+  - `LogScanner`, the stat tiles and the 4-week heatmap (paging, tooltip)
+  - the settings panel
+  - alerts (same `state.json` shapes, so switching apps never repeats one)
+  - the taskbar button with `ITaskbarList3` progress
+  - autostart
+  - a self-installer: `ClaudeUsageWidget.exe --install` / `--uninstall`, with shortcuts carrying the AppUserModelID
+- **Measured under the same conditions:**
+
+  | | Python app | Rust app |
+  |---|---|---|
+  | Memory | ~181 MB, 8 processes | 14.6 MB, 1 process |
+  | CPU, card closed (one core) | 1.69% | 0.44% |
+  | First log scan | 2.8 s | 0.6 s |
+
+- `rust/PLAN.md` has the details. Going back to Python is `Install.bat`.

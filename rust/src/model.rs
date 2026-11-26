@@ -253,12 +253,6 @@ pub struct Model {
     pub interval_label: String,
 }
 
-impl Model {
-    pub fn stale(&self) -> bool {
-        self.fresh.state == FreshState::Stale
-    }
-}
-
 fn clamp01(x: f64) -> f64 {
     (x.clamp(0.0, 1.0) * 10000.0).round() / 10000.0
 }
