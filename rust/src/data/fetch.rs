@@ -76,6 +76,20 @@ pub fn http_json(url: &str, headers: &[(&str, String)], body: Option<&str>) -> R
     serde_json::from_str(text).map_err(|_| FetchError::Unexpected("response is not JSON".into()))
 }
 
+/// Status shown for an HTTP error from the usage endpoint.
+pub fn http_status(code: u16) -> (&'static str, String) {
+    match code {
+        401 | 403 => ("expired", "Sign-in expired".into()),
+        429 => ("error", "Rate-limited, retrying".into()),
+        c => ("error", format!("HTTP {c}")),
+    }
+}
+
+/// Extra wait after a 429: 120 s, then doubling, capped at 15 minutes.
+pub fn next_backoff(prev: u64) -> u64 {
+    (prev * 2).clamp(120, 900)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitsSnapshot {
     pub windows: BTreeMap<String, Window>,
@@ -211,9 +225,18 @@ impl LimitsFetcher {
         let base = self.t0;
         // CUW_DEMO_STILL=1 holds the values steady (for measuring idle cost with the card open).
         let el = if std::env::var_os("CUW_DEMO_STILL").is_some() { 0.0 } else { now() - self.t0 };
+        // CUW_DEMO_SCENARIO: warn (80%), crit (93%), pending (the session resets 20 s in,
+        // after updates stop at 15 s, so the "reset · updating" state shows).
+        let scenario = std::env::var("CUW_DEMO_SCENARIO").unwrap_or_default();
+        let (pct, reset) = match scenario.as_str() {
+            "warn" => (80.0, base + 2.0 * 3600.0 + 50.0 * 60.0),
+            "crit" => (93.0, base + 2.0 * 3600.0 + 50.0 * 60.0),
+            "pending" => (64.0, base + 20.0),
+            _ => ((52.0 + el / 10.0).min(100.0), base + 2.0 * 3600.0 + 50.0 * 60.0),
+        };
         BTreeMap::from([
             ("five_hour".to_string(), Window { title: "Session".into(), sub: "5h sliding window".into(), short: "5h".into(),
-                pct: (52.0 + el / 10.0).min(100.0), resets: Some(from_ts(base + 2.0 * 3600.0 + 50.0 * 60.0)) }),
+                pct, resets: Some(from_ts(reset)) }),
             ("seven_day".to_string(), Window { title: "Weekly".into(), sub: "All models".into(), short: "Wk".into(),
                 pct: 22.0, resets: Some(from_ts(base + (4.0 * 24.0 + 2.0) * 3600.0)) }),
         ])
@@ -230,6 +253,9 @@ impl LimitsFetcher {
             if std::env::var_os("CUW_DEMO_OFFLINE").is_some() && now() - self.t0 > 25.0 {
                 self.set_status("error", "Offline"); // demo-only: simulate losing the network
                 return;
+            }
+            if std::env::var("CUW_DEMO_SCENARIO").as_deref() == Ok("pending") && now() - self.t0 > 15.0 {
+                return; // no new data after the (demo) reset
             }
             let w = self.demo_windows();
             let t = now();
@@ -297,14 +323,11 @@ impl LimitsFetcher {
             }
             Err(FetchError::Http(code)) => {
                 logf!("WARNING usage HTTP {code}");
-                match code {
-                    401 | 403 => self.set_status("expired", "Sign-in expired"),
-                    429 => self.set_status("error", "Rate-limited, retrying"),
-                    c => self.set_status("error", &format!("HTTP {c}")),
-                }
+                let (status, error) = http_status(code);
+                self.set_status(status, &error);
                 if code == 429 {
                     let b = self.backoff.load(Ordering::Relaxed);
-                    self.backoff.store((b * 2).max(120).min(900), Ordering::Relaxed);
+                    self.backoff.store(next_backoff(b), Ordering::Relaxed);
                 }
             }
             Err(FetchError::Unexpected(e)) => {
@@ -388,6 +411,31 @@ mod tests {
         let w = f.parse(&json!({"seven_day_opus": {"utilization": 5.0}}));
         assert_eq!(w["seven_day_opus"].title, "Opus");
         assert_eq!(w["seven_day_opus"].short, "Op");
+    }
+
+    #[test]
+    fn rate_limit_backoff_grows_and_caps() {
+        let mut b = 0;
+        let mut seen = vec![];
+        for _ in 0..5 {
+            b = next_backoff(b);
+            seen.push(b);
+        }
+        assert_eq!(seen, vec![120, 240, 480, 900, 900]);
+        // a real (non-demo) fetcher: demo mode always waits 3 s
+        let f = LimitsFetcher::new(Arc::new(Store::for_tests()), Arc::new(History::new(vec![], false)), false);
+        let base = f.next_wait();
+        assert_eq!(base, 120.0);
+        f.backoff.store(240, Ordering::Relaxed);
+        assert_eq!(f.next_wait(), base + 240.0);
+    }
+
+    #[test]
+    fn http_errors_map_to_honest_statuses() {
+        assert_eq!(http_status(401), ("expired", "Sign-in expired".to_string()));
+        assert_eq!(http_status(403).0, "expired");
+        assert_eq!(http_status(429), ("error", "Rate-limited, retrying".to_string()));
+        assert_eq!(http_status(503), ("error", "HTTP 503".to_string()));
     }
 
     #[test]

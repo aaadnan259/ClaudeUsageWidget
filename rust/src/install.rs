@@ -70,7 +70,8 @@ fn create_shortcut(lnk: &Path, exe: &Path, icon: &Path) -> windows::core::Result
 }
 
 fn message(text: &str, error: bool) {
-    if std::env::var_os("CUW_INSTALL_TEST").is_some() {
+    // CUW_INSTALL_QUIET=1: log instead of showing a message box (scripted installs/tests).
+    if std::env::var_os("CUW_INSTALL_TEST").is_some() || std::env::var_os("CUW_INSTALL_QUIET").is_some() {
         logf!("install: {text}");
         return;
     }

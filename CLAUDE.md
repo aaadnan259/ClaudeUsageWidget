@@ -19,7 +19,7 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
 ## Commands
 - **Rust (the app):**
   - Build: `cd rust && cargo build --release`
-  - Demo: `target\release\ClaudeUsageWidget.exe --demo`. Demo mode never writes config/state. `CUW_DEMO_OFFLINE=1` goes stale after 25 s; `CUW_DEMO_STILL=1` holds values steady for performance checks.
+  - Demo: `target\release\ClaudeUsageWidget.exe --demo`. Demo mode never writes config/state. `CUW_DEMO_OFFLINE=1` goes stale after 25 s; `CUW_DEMO_STILL=1` holds values steady for performance checks. `CUW_DEMO_SCENARIO=warn|crit|pending` shows 80% / 93% / the "reset · updating" state.
   - Tests: `cargo test`
   - Install or update: `target\release\ClaudeUsageWidget.exe --install`. It replaces the running copy, updates the shortcuts and autostart, and restarts. `--uninstall` removes them.
 - **Python (fallback):**
@@ -28,6 +28,7 @@ It's personal use for one user (Claude Pro, mostly Claude Code).
   - Install / switch back: `Install.bat`
 - **Stop it:** right-click the pill → Quit, or the tray icon → Quit.
 - **Logs:** `%APPDATA%\ClaudeUsageWidget\widget.log`. Rust lines end in `[rust]`.
+- **Sending `WM_CLOSE` to the host window from a script:** use Python ctypes, not PowerShell. PowerShell passes `$null` as an empty string, so `FindWindowW(class, "")` misses the window.
 - **Before testing against the real app:** an installed instance holds the single-instance lock, so a `--demo` launch just opens the real card. Quit or stop the installed one first.
 
 ## Map

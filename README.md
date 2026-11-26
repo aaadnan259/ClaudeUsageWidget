@@ -33,6 +33,8 @@ Opening it while it's already running pops its card open.
 - **Try it with fake numbers:** `target\release\ClaudeUsageWidget.exe --demo`. Demo mode never changes your saved settings. For checks it also takes:
   - `CUW_DEMO_OFFLINE=1`: goes "offline" after 25 s, to show the stale look
   - `CUW_DEMO_STILL=1`: keeps the values steady
+  - `CUW_DEMO_SCENARIO=warn`, `crit` or `pending`: 80%, 93%, or a reset that happens while updates have stopped ("reset · updating")
+  - `CUW_INSTALL_QUIET=1` with `--install` / `--uninstall`: no message box (for scripts)
 
 ### Troubleshooting
 - **Nothing appears:** look at `%APPDATA%\ClaudeUsageWidget\widget.log`. A start-up failure also shows an error box.
@@ -85,7 +87,7 @@ Measured on the development machine:
 
 ## Tests
 ```
-cd rust && cargo test                              (Rust: 28 tests)
+cd rust && cargo test                              (Rust: 30 tests)
 .venv\Scripts\python.exe -m unittest discover -s tests -v   (Python version)
 ```
 

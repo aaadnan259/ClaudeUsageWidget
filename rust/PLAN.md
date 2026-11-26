@@ -79,6 +79,19 @@ target\release\ClaudeUsageWidget.exe --install     (make it the installed app)
 - **Exe icon and version info** via `rc.exe` in `build.rs`.
 - **Menus follow the widget's Theme setting.**
 
+**Verified after the audit (2026-11-26):**
+- the warning (80%) and critical (93%) states, with amber and red taskbar progress
+- the "reset · updating" pending state on screen
+- wake after a simulated 41 s sleep: "resumed after 41s", then an immediate refresh
+- the watchdog replacing a frozen fetch thread after about 2.5 min
+- `--uninstall`, then `Install.bat` back to Python, then `--install` back to Rust: it closed the Python widget cleanly, and the shortcuts and autostart followed each step
+- 429 backoff (120 → 240 → 480 → 900 s cap) and the HTTP status texts, as unit tests
+
+**Still not verified:**
+- **Token refresh against the real endpoint.** It isn't safe to force: refresh tokens rotate, and a failed test could sign Claude Code out.
+- **A real 429.**
+- **Other monitors, display scalings and taskbar positions.** These need other hardware or a change to the user's display settings.
+
 **Install / switch over** (`--install`):
 1. Copies the `.exe` and icon to `%LOCALAPPDATA%\Programs\ClaudeUsageWidget`.
 2. Creates Start menu and Desktop shortcuts carrying the `ClaudeUsageWidget` AppUserModelID.
